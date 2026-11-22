@@ -18,8 +18,9 @@ versions follow [Semantic Versioning](https://semver.org/).
     thinner than a pixel when it was 2 pixels or less, and cells of
     0.9–3 pt at 48–96 dpi came out blank;
   - tiles no longer blur or drift (the cell is not rounded to whole
-    pixels) and meet without seams; a line of width 0 stays one device
-    pixel; nothing is raised to a minimum width or density;
+    pixels) and meet without seams; a line or glyph outline stroked
+    with width 0 (text rendering modes 1, 2, 5, 6 included) stays one
+    device pixel wide; nothing is raised to a minimum width or density;
   - cells whose `/BBox` exceeds the step — overlapping tiles, including
     a step plus the rounding TikZ writes — are drawn the same way, the
     texture holding the cell and every neighbour that overlaps into it,

@@ -590,3 +590,63 @@ fn every_dash_of_a_hairline_in_the_texture_is_drawn() {
     let r = draw(&dense, 96.0);
     assert!(mean(&r, 96.0) < 60.0, "{}", mean(&r, 96.0));
 }
+
+#[test]
+fn stroked_text_of_width_0_is_one_device_pixel_in_the_texture() {
+    // Glyph outlines stroked with width 0 (text rendering modes 1 and 5)
+    // in dense cells, under scale, anisotropic scale and skew: as when
+    // the same tiles are drawn on the page, one device pixel wide (before:
+    // one texture pixel, an eighth of that, the text nearly invisible).
+    // A skewed glyph is drawn a little darker than on the page: its
+    // diagonals are a full pixel wide, the page's anti-aliased hairline
+    // covers about 0.7 of one on a diagonal.
+    let font = "/Font << /F << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >>";
+    for (m, dpi, tolerance) in [
+        ("1 0 0 1 0 0", 96.0, 8.0),
+        ("4 0 0 1 0 0", 96.0, 8.0),
+        ("1 0 0 4 0 0", 150.0, 8.0),
+        ("1 0 0.7 1 0 0", 96.0, 16.0),
+    ] {
+        for tr in [1, 5] {
+            let cell = format!("BT /F 5 Tf {tr} Tr 0 w 0 0 1 RG 0.5 0.8 Td (H) Tj ET");
+            let pat = build_pdf(&[
+                (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
+                      /Resources << /Pattern << /P 5 0 R >> >> >>"
+                        .to_vec(),
+                ),
+                (4, stream_obj("", format!("/Pattern cs /P scn {REGION} f").as_bytes())),
+                (
+                    5,
+                    stream_obj(
+                        &format!(
+                            "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 5 5] /XStep 5 /YStep 5 \
+                             /Matrix [{m}] /Resources << {font} >>"
+                        ),
+                        cell.as_bytes(),
+                    ),
+                ),
+            ]);
+            let mut tiles = String::new();
+            for j in -2..=200 {
+                for i in -150..=200 {
+                    tiles.push_str(&format!(
+                        "q 1 0 0 1 {} {} cm 0 0 5 5 re W n {cell} Q ",
+                        i * 5,
+                        j * 5
+                    ));
+                }
+            }
+            let plain = plain_page(&format!("{m} cm {tiles}"), font);
+            let (a, b) = (draw(&pat, dpi), draw(&plain, dpi));
+            let (ma, mb) = (mean(&a, dpi), mean(&b, dpi));
+            assert!(
+                (ma - mb).abs() <= tolerance,
+                "[{m}] Tr {tr} at {dpi} dpi: {ma:.2}, on the page {mb:.2}"
+            );
+        }
+    }
+}

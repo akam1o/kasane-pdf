@@ -134,9 +134,10 @@ are on the [roadmap](architecture.md#roadmap).
   once per tile, each clipped to its `/BBox` with anti-aliased edges,
   so content reaching a tile's edge shows faint seams there (as in
   MuPDF). Denser fills use the periodic texture (CHANGELOG, Unreleased):
-  inside it stroke adjustment (`/SA`) is not applied, and text drawn
-  with a stroke of width 0 (text rendering modes 1, 2, 5, 6) is one
-  texture pixel wide rather than one device pixel; under a rotated or
+  inside it stroke adjustment (`/SA`) is not applied, and a line or
+  glyph outline stroked with width 0 is one device pixel wide with bevel
+  joins — on a diagonal a little more ink than the page's anti-aliased
+  hairline, which covers about 0.7 of a pixel there; under a rotated or
   skewed pattern matrix each device pixel is averaged in 2 × 2 parts
   over their bounding boxes (the mean coverage is kept; edge pixels can
   differ by some levels from the exact footprint). Overlapping cells

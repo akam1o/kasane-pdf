@@ -6821,8 +6821,6 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    /// Fresh graphics state for one cell: `ctm` as the CTM, the outer
-    /// fill colour for an uncoloured pattern, `clip` as the clip.
     /// Stroke `path` (drawn through `ts`) as a line of width 0 inside a
     /// supersampled tiling texture: one device pixel wide in every
     /// direction (§8.4.3.2), whatever the texture's scale along each
@@ -6879,9 +6877,13 @@ impl<'a> Renderer<'a> {
         let Some(device_path) = path.transform(ts.post_concat(to_device)) else {
             return Ok(());
         };
+        // As thin as the device draws: no miter spikes at corners, which
+        // a line of width 0 does not have (bevel joins add nothing past a
+        // one-pixel width).
         let one = Stroke {
             width: 1.0,
             dash: None,
+            line_join: tiny_skia::LineJoin::Bevel,
             ..stroke.clone()
         };
         self.pixmap.stroke_path(
@@ -6894,6 +6896,8 @@ impl<'a> Renderer<'a> {
         Ok(())
     }
 
+    /// Fresh graphics state for one cell: `ctm` as the CTM, the outer
+    /// fill colour for an uncoloured pattern, `clip` as the clip.
     fn reset_cell_state(&mut self, tp: &TilingPattern, ctm: Matrix, clip: Option<Rc<GsMask>>) {
         self.gs = GraphicsState::new();
         self.gs.ctm = ctm;
@@ -7523,6 +7527,10 @@ impl<'a> Renderer<'a> {
         // `gs` borrow below.
         let mut pattern_fill: Option<(tiny_skia::Path, Transform)> = None;
         let mut pattern_stroke: Option<(tiny_skia::Path, Transform, Stroke)> = None;
+        // A glyph outline stroked with width 0 in a supersampled tiling
+        // texture: one device pixel wide (`stroke_device_hairline`),
+        // past the `gs` borrow.
+        let mut hairline_stroke: Option<(tiny_skia::Path, Transform, Paint, Stroke)> = None;
         let text_stroke =
             matches!(self.gs.text.render_mode, 1 | 2 | 5 | 6).then(|| gs_stroke(&self.gs));
         let gs = &mut self.gs;
@@ -7709,23 +7717,27 @@ impl<'a> Renderer<'a> {
                         let c = gs.stroke_color.with_alpha(gs.stroke_alpha);
                         p.set_color(tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a));
                         device_extent(path, full, self.pixmap.width(), self.pixmap.height(), true)?;
-                        let stroke = bounded_stroke(
-                            &stroke,
-                            full,
-                            path,
-                            self.pixmap.width(),
-                            self.pixmap.height(),
-                        )?;
-                        stroke_bounded(
-                            self.pixmap,
-                            &mut self.dash_work,
-                            path,
-                            &p,
-                            &stroke,
-                            gs.dash.as_ref().map_or(&[][..], |d| &d.0),
-                            full,
-                            gs.clip.as_deref().map(|m| &m.mask),
-                        )?;
+                        if gs.line_width == 0.0 && self.texel_scale > 1.0 {
+                            hairline_stroke = Some((path.clone(), full, p, stroke));
+                        } else {
+                            let stroke = bounded_stroke(
+                                &stroke,
+                                full,
+                                path,
+                                self.pixmap.width(),
+                                self.pixmap.height(),
+                            )?;
+                            stroke_bounded(
+                                self.pixmap,
+                                &mut self.dash_work,
+                                path,
+                                &p,
+                                &stroke,
+                                gs.dash.as_ref().map_or(&[][..], |d| &d.0),
+                                full,
+                                gs.clip.as_deref().map(|m| &m.mask),
+                            )?;
+                        }
                     }
                 }
                 // mode 3: invisible — paint nothing, still advance.
@@ -7859,6 +7871,9 @@ impl<'a> Renderer<'a> {
         }
         if let Some((p, full, stroke)) = pattern_stroke {
             self.stroke_path_with_pattern(&p, &stroke, full)?;
+        }
+        if let Some((p, full, paint, stroke)) = hairline_stroke {
+            self.stroke_device_hairline(&p, &paint, &stroke, full)?;
         }
         Ok(())
     }
