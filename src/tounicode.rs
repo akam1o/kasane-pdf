@@ -235,7 +235,11 @@ impl ToUnicode {
                 "ToUnicode CMap has no begincodespacerange".into(),
             ));
         }
-        // Sort for binary-search lookup; duplicates keep the first.
+        // A code defined again takes its later definition, as the CMap is
+        // read in order (a whole-range mapping refined by later bfchar
+        // entries). The sort is stable, so reversing first keeps the last
+        // definition of each code at the front of its run.
+        out.entries.reverse();
         out.entries.sort_by_key(|m| m.code);
         out.entries.dedup_by_key(|m| m.code);
         Ok(out)
