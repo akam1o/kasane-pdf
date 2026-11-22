@@ -793,6 +793,10 @@ pub(crate) struct DiagGs {
     /// Redaction: the tiling pattern the fill / stroke paints with
     /// (its resource name), if any.
     tiling: [Option<Vec<u8>>; 2],
+    /// Redaction: the shading pattern the fill / stroke paints with, as
+    /// resolved where selected — checked again in each form it is
+    /// inherited into (readers place it in either stream's space).
+    shading_pat: [Option<Object>; 2],
 }
 
 impl DiagGs {
@@ -818,8 +822,20 @@ impl DiagGs {
                 ..Default::default()
             },
             tiling: [None, None],
+            shading_pat: [None, None],
         }
     }
+}
+
+/// What a probe of content drawn elsewhere found (`probe_form`).
+#[derive(Debug, PartialEq)]
+pub(crate) enum Probe {
+    /// Nothing in it meets a rect.
+    Clear,
+    /// Something in it meets a rect.
+    Meets,
+    /// Something in it cannot be bounded (why).
+    Unbounded(String),
 }
 
 /// `pub(crate)` — `remove_text` walks the same content with the
@@ -880,6 +896,14 @@ pub(crate) struct DiagWalker<'a> {
     /// group may hide anywhere, so the mask is refused.
     in_mask: u32,
     mask_unbounded: bool,
+    /// Probing an annotation's appearance (`form_meets_rects`): a glyph
+    /// of a font without its program is bounded by a generous box around
+    /// where it stands instead of being uncertain.
+    probing_appearance: u32,
+    /// The default space of the content stream being walked, in page
+    /// space: a pattern's space is it under the pattern's `/Matrix`
+    /// (§8.7.3.1) — the page's own, or a form's at its `Do`.
+    pattern_base: crate::matrix::Matrix,
     /// `pub(crate)` — `remove_text` reads the per-code targets.
     pub(crate) targets: Vec<Target>,
     /// `pub(crate)` — `remove_text` refuses on any uncertain entry.
@@ -1049,6 +1073,8 @@ impl<'a> DiagWalker<'a> {
             uncertain_state: false,
             in_mask: 0,
             mask_unbounded: false,
+            probing_appearance: 0,
+            pattern_base: crate::matrix::Matrix::IDENTITY,
             targets: Vec::new(),
             uncertain: Vec::new(),
             blockers: Vec::new(),
@@ -1227,12 +1253,33 @@ impl<'a> DiagWalker<'a> {
             return Ok(Some("a soft mask whose group is not a form XObject"));
         }
         let (gd, raw) = (gd.clone(), raw.to_vec());
+        let meets = self.probe_form(&gd, &raw, b"SMask", g_ref, self.gs.ctm, true)? != Probe::Clear;
+        Ok(meets.then_some(
+            "a soft mask whose group draws inside a rect, or draws what cannot be bounded",
+        ))
+    }
+
+    /// Redaction: whether anything the form `gd` draws, run under `ctm`
+    /// from the initial graphics state, meets a rect — its `/BBox`
+    /// included, and what its `/BBox` or a clip hides — or is uncertain
+    /// or blocked. What the walk finds is dropped, its sites kept.
+    /// `strict` (a soft mask's group): a shading or a pattern colour in it
+    /// counts as meeting too.
+    fn probe_form(
+        &mut self,
+        gd: &Dict,
+        raw: &[u8],
+        name: &[u8],
+        g_ref: Option<IndirectRef>,
+        ctm: crate::matrix::Matrix,
+        strict: bool,
+    ) -> Result<Probe, Error> {
         let marks = (
             self.targets.len(),
             self.uncertain.len(),
             self.blockers.len(),
         );
-        let fresh = DiagGs::initial(self.gs.ctm);
+        let fresh = DiagGs::initial(ctm);
         let saved_gs = std::mem::replace(&mut self.gs, fresh);
         let saved_text = (self.text_tm, self.text_tlm, self.in_text, self.code_index);
         let saved_path = (
@@ -1245,12 +1292,14 @@ impl<'a> DiagWalker<'a> {
         let saved_uncertain = std::mem::replace(&mut self.uncertain_state, false);
         let saved_op = self.op_index;
         let saved_unbounded = std::mem::replace(&mut self.mask_unbounded, false);
-        self.in_mask += 1;
+        if strict {
+            self.in_mask += 1;
+        }
         self.in_text = false;
         self.path_has_point = false;
         self.path_rects = Some(Vec::new());
         self.path_single_rect = false;
-        let r = self.do_form(&gd, &raw, b"SMask", g_ref);
+        let r = self.do_form(gd, raw, name, g_ref);
         self.gs = saved_gs;
         (self.text_tm, self.text_tlm, self.in_text, self.code_index) = saved_text;
         (
@@ -1262,19 +1311,63 @@ impl<'a> DiagWalker<'a> {
         ) = saved_path;
         self.uncertain_state = saved_uncertain;
         self.op_index = saved_op;
-        self.in_mask -= 1;
+        if strict {
+            self.in_mask -= 1;
+        }
         let unbounded = std::mem::replace(&mut self.mask_unbounded, saved_unbounded);
         r?;
-        let meets = unbounded
-            || self.targets[marks.0..].iter().any(|t| !t.hits.is_empty())
-            || self.uncertain.len() > marks.1
-            || self.blockers.len() > marks.2;
+        let found = if unbounded || self.targets[marks.0..].iter().any(|t| !t.hits.is_empty()) {
+            Probe::Meets
+        } else if let Some(b) = self.blockers.get(marks.2) {
+            Probe::Unbounded(format!("{}: {}", b.what, b.detail))
+        } else if let Some(u) = self.uncertain.get(marks.1) {
+            Probe::Unbounded(u.reason.clone())
+        } else {
+            Probe::Clear
+        };
         self.targets.truncate(marks.0);
         self.uncertain.truncate(marks.1);
         self.blockers.truncate(marks.2);
-        Ok(meets.then_some(
-            "a soft mask whose group draws inside a rect, or draws what cannot be bounded",
-        ))
+        Ok(found)
+    }
+
+    /// Redaction: whether what the form XObject `form` draws as placed
+    /// by `ctm` (an annotation's appearance fitted to its `/Rect`) meets
+    /// a rect — anything in it, what its `/BBox` or a clip hides included
+    /// — or cannot be bounded. A glyph of a font without its program is
+    /// bounded by its em square grown by an em on every side (a reader
+    /// draws and extracts it there with a substitute).
+    pub(crate) fn form_meets_rects(
+        &mut self,
+        form: &Object,
+        ctm: crate::matrix::Matrix,
+    ) -> Result<Probe, Error> {
+        let f_ref = form.as_ref();
+        let f = self.doc.deref(form)?;
+        let Some((fd, raw)) = f.as_stream() else {
+            return Ok(Probe::Unbounded(
+                "an appearance that is not a stream".into(),
+            ));
+        };
+        if fd
+            .get(b"Subtype".as_slice())
+            .and_then(|o| o.as_name())
+            .is_some_and(|s| s != b"Form")
+        {
+            return Ok(Probe::Unbounded("an appearance that is not a form".into()));
+        }
+        let mut fd = fd.clone();
+        // As readers take them: indirect /BBox and /Matrix resolved.
+        for k in [b"BBox".as_slice(), b"Matrix"] {
+            if let Some(v) = fd.get(k).cloned() {
+                fd.insert(k.to_vec(), self.doc.deref(&v)?);
+            }
+        }
+        let raw = raw.to_vec();
+        self.probing_appearance += 1;
+        let r = self.probe_form(&fd, &raw, b"AP", f_ref, ctm, false);
+        self.probing_appearance -= 1;
+        r
     }
 
     /// The tiling patterns in force count as used by what is kept.
@@ -1321,6 +1414,187 @@ impl<'a> DiagWalker<'a> {
             });
         }
         Ok(b.filter(|b| [b.0, b.1, b.2, b.3].iter().all(|v| v.is_finite())))
+    }
+
+    /// Whether shading `name` is axial: its data is its axis and function,
+    /// colours along a band across the page — kept whole whatever a rect
+    /// would show of it, as when it is cut (§2.1, N).
+    fn is_axial(&self, name: &[u8]) -> Result<bool, Error> {
+        Ok(
+            match self
+                .doc
+                .resolve_resource(&self.resources, "Shading", name)?
+            {
+                Some(Object::Dict(d)) | Some(Object::Stream { dict: d, .. }) => {
+                    d.get(b"ShadingType".as_slice()).and_then(|t| t.as_i64()) == Some(2)
+                }
+                _ => false,
+            },
+        )
+    }
+
+    /// Where the geometry of shading `name` lies, in page space — the
+    /// positions its data names (a clip hides ink, not data; a `/BBox` is
+    /// one more clip, so it is not the geometry): a function-based
+    /// shading's `/Domain` (under its `/Matrix`), a radial one's two
+    /// circles, a mesh's `/Decode` range of coordinates (every vertex lies
+    /// in it). The colours a radial shading extends past its circles are
+    /// its function's end colours, placed nowhere. An axial shading is
+    /// kept as it is (`is_axial`). `None` when not read.
+    fn shading_geometry(&self, name: &[u8]) -> Result<Option<(f64, f64, f64, f64)>, Error> {
+        let Some(sh) = self
+            .doc
+            .resolve_resource(&self.resources, "Shading", name)?
+        else {
+            return Ok(None);
+        };
+        let d = match &sh {
+            Object::Dict(d) => d,
+            Object::Stream { dict, .. } => dict,
+            _ => return Ok(None),
+        };
+        self.geometry_of(d, self.gs.ctm)
+    }
+
+    /// For a shading pattern used as a colour: why its shading's geometry
+    /// may lie inside a rect (it meets one, or cannot be placed), or
+    /// `None`. Pattern space is the default space of the content stream
+    /// that selects it (`pattern_base`), under the pattern's `/Matrix`;
+    /// a pattern with an `/ExtGState` holding a soft mask is refused.
+    fn pattern_shading_meets(
+        &self,
+        pattern: Option<&Object>,
+    ) -> Result<Option<&'static str>, Error> {
+        let Some(p) = pattern else { return Ok(None) };
+        let Some(pd) = (match p {
+            Object::Dict(d) => Some(d),
+            Object::Stream { dict, .. } => Some(dict),
+            _ => None,
+        }) else {
+            return Ok(None);
+        };
+        if let Some(g) = pd.get(b"ExtGState".as_slice()) {
+            let g = self.doc.deref(g)?;
+            let mask = g
+                .as_dict()
+                .and_then(|g| g.get(b"SMask".as_slice()))
+                .map(|m| self.doc.deref(m))
+                .transpose()?;
+            if mask.is_some_and(|m| m.as_name() != Some(b"None".as_slice()))
+                || g.as_dict().is_none()
+            {
+                return Ok(Some(
+                    "a shading pattern whose graphics state sets a soft mask",
+                ));
+            }
+        }
+        let Some(sh) = pd.get(b"Shading".as_slice()) else {
+            return Ok(Some("a shading pattern without a shading"));
+        };
+        let sh = self.doc.deref(sh)?;
+        let Some(d) = (match &sh {
+            Object::Dict(d) => Some(d),
+            Object::Stream { dict, .. } => Some(dict),
+            _ => None,
+        }) else {
+            return Ok(Some("a shading that is not a dictionary"));
+        };
+        if d.get(b"ShadingType".as_slice()).and_then(|t| t.as_i64()) == Some(2) {
+            return Ok(None);
+        }
+        let m = match pd
+            .get(b"Matrix".as_slice())
+            .map(|o| self.doc.deref(o))
+            .transpose()?
+        {
+            None | Some(Object::Null) => crate::matrix::Matrix::IDENTITY,
+            Some(o) => match o.as_array().and_then(|a| {
+                (a.len() == 6)
+                    .then(|| {
+                        a.iter()
+                            .map(|x| x.as_number())
+                            .collect::<Option<Vec<f64>>>()
+                    })
+                    .flatten()
+            }) {
+                Some(v) => crate::matrix::Matrix::new(v[0], v[1], v[2], v[3], v[4], v[5]),
+                None => return Ok(Some("a pattern /Matrix that is not one")),
+            },
+        };
+        Ok(match self.geometry_of(d, m.concat(self.pattern_base))? {
+            Some(g) if hits_for(&g, self.rects).is_empty() => None,
+            Some(_) => Some("its shading's geometry meets a rect"),
+            None => Some("its shading's geometry cannot be placed"),
+        })
+    }
+
+    /// [`Self::shading_geometry`] of shading dictionary `d` placed by `ctm`.
+    fn geometry_of(
+        &self,
+        d: &Dict,
+        ctm: crate::matrix::Matrix,
+    ) -> Result<Option<(f64, f64, f64, f64)>, Error> {
+        let nums = |k: &[u8]| -> Result<Option<Vec<f64>>, Error> {
+            Ok(match d.get(k) {
+                Some(o) => self.doc.deref(o)?.as_array().and_then(|a| {
+                    a.iter()
+                        .map(|x| x.as_number())
+                        .collect::<Option<Vec<f64>>>()
+                }),
+                None => None,
+            })
+        };
+        let bounds = |pts: &[(f64, f64)], m: crate::matrix::Matrix| {
+            let t: Vec<(f64, f64)> = pts.iter().map(|&(x, y)| m.transform(x, y)).collect();
+            let b = (
+                t.iter().map(|p| p.0).fold(f64::INFINITY, f64::min),
+                t.iter().map(|p| p.1).fold(f64::INFINITY, f64::min),
+                t.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max),
+                t.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max),
+            );
+            [b.0, b.1, b.2, b.3]
+                .iter()
+                .all(|v| v.is_finite())
+                .then_some(b)
+        };
+        let corners = |r: [f64; 4]| [(r[0], r[1]), (r[2], r[1]), (r[0], r[3]), (r[2], r[3])];
+        Ok(
+            match d.get(b"ShadingType".as_slice()).and_then(|t| t.as_i64()) {
+                Some(1) => {
+                    let dom = nums(b"Domain")?.unwrap_or(vec![0.0, 1.0, 0.0, 1.0]);
+                    let m = match nums(b"Matrix")? {
+                        None => crate::matrix::Matrix::IDENTITY,
+                        Some(v) if v.len() == 6 => {
+                            crate::matrix::Matrix::new(v[0], v[1], v[2], v[3], v[4], v[5])
+                        }
+                        Some(_) => return Ok(None),
+                    };
+                    if dom.len() != 4 {
+                        return Ok(None);
+                    }
+                    bounds(&corners([dom[0], dom[2], dom[1], dom[3]]), m.concat(ctm))
+                }
+                Some(3) => match nums(b"Coords")? {
+                    Some(c) if c.len() == 6 && c[2] >= 0.0 && c[5] >= 0.0 => {
+                        let (r0, r1) = (c[2], c[5]);
+                        bounds(
+                            &[
+                                corners([c[0] - r0, c[1] - r0, c[0] + r0, c[1] + r0]),
+                                corners([c[3] - r1, c[4] - r1, c[3] + r1, c[4] + r1]),
+                            ]
+                            .concat(),
+                            ctm,
+                        )
+                    }
+                    _ => None,
+                },
+                Some(4..=7) => match nums(b"Decode")? {
+                    Some(v) if v.len() >= 4 => bounds(&corners([v[0], v[2], v[1], v[3]]), ctm),
+                    _ => None,
+                },
+                _ => None,
+            },
+        )
     }
 
     /// For `sh` with the shading `name` crossing a rect, in page content:
@@ -1735,7 +2009,9 @@ impl<'a> DiagWalker<'a> {
             // it fills (§8.7.2), so a Pattern colour space moves
             // nothing; the selected pattern is checked at `scn`.
             O::SetColorSpaceStroke(_) | O::SetColorSpaceFill(_) if self.redaction_mode => {
-                self.gs.tiling[usize::from(matches!(op, O::SetColorSpaceStroke(_)))] = None;
+                let side = usize::from(matches!(op, O::SetColorSpaceStroke(_)));
+                self.gs.tiling[side] = None;
+                self.gs.shading_pat[side] = None;
             }
             O::SetColorStroke(ops) | O::SetColorFill(ops)
                 if self.redaction_mode && matches!(ops.last(), Some(Object::Name(_))) =>
@@ -1764,8 +2040,33 @@ impl<'a> DiagWalker<'a> {
                 });
                 // A tiling pattern's cell is content of its own: what
                 // it paints is decided where it is used (`tiling_paint`).
+                // Its shading's own geometry (a mesh's vertices, a sampled
+                // function's domain): data placed where it lies, whatever
+                // path it fills — refused where it meets a rect. An axial
+                // shading is colours along a band (§2.1, N).
+                let shading_type = pattern.as_ref().is_some_and(|p| {
+                    let d = match p {
+                        Object::Dict(d) => Some(d),
+                        Object::Stream { dict, .. } => Some(dict),
+                        _ => None,
+                    };
+                    d.is_some_and(|d| {
+                        d.get(b"PatternType".as_slice()).and_then(|t| t.as_i64()) == Some(2)
+                    })
+                });
+                if shading_type {
+                    if let Some(why) = self.pattern_shading_meets(pattern.as_ref())? {
+                        self.push_blocker(Blocker {
+                            site: Some(self.site()),
+                            what: "shading pattern".into(),
+                            detail: format!("/{} — {why}", String::from_utf8_lossy(n)),
+                        })?;
+                        self.uncertain_state = true;
+                    }
+                }
                 let side = usize::from(matches!(op, O::SetColorStroke(_)));
                 self.gs.tiling[side] = (!shading).then(|| n.clone());
+                self.gs.shading_pat[side] = if shading_type { pattern.clone() } else { None };
             }
             O::SetColorSpaceStroke(n) | O::SetColorSpaceFill(n) => {
                 // A Pattern colour space means subsequent SC/sc paints
@@ -1786,11 +2087,15 @@ impl<'a> DiagWalker<'a> {
             }
             O::SetColorFill(_) | O::SetGrayFill(_) | O::SetRgbFill(..) | O::SetCmykFill(..) => {
                 self.gs.tiling[0] = None;
+                self.gs.shading_pat[0] = None;
             }
             O::SetColorStroke(_)
             | O::SetGrayStroke(_)
             | O::SetRgbStroke(..)
-            | O::SetCmykStroke(..) => self.gs.tiling[1] = None,
+            | O::SetCmykStroke(..) => {
+                self.gs.tiling[1] = None;
+                self.gs.shading_pat[1] = None;
+            }
             O::MoveTo(x, y) => {
                 self.path_single_rect = false;
                 self.path_rects = None;
@@ -2039,7 +2344,17 @@ impl<'a> DiagWalker<'a> {
             }
             // Redaction: a shading fills the clip; under a clip that is
             // exactly a rectangle meeting no rect it paints none of them.
-            O::Shading(_) if self.redaction_mode && self.clipped_away_from_rects() => {}
+            // A shading under a clip that keeps it from every rect paints
+            // none of them — kept when nothing of its own geometry (what
+            // it would paint unclipped: a clip hides ink, not data) meets
+            // one either; otherwise it is handled as one crossing a rect.
+            O::Shading(n)
+                if self.redaction_mode
+                    && self.clipped_away_from_rects()
+                    && (self.is_axial(n)?
+                        || self
+                            .shading_geometry(n)?
+                            .is_some_and(|g| hits_for(&g, self.rects).is_empty())) => {}
             // Redaction: a shading wholly inside a rect (what it may
             // paint — its clip's bounds, its /BBox — inside one) is
             // removed whole. One crossing a rect is refused — its
@@ -3089,6 +3404,78 @@ impl<'a> DiagWalker<'a> {
         Ok(())
     }
 
+    /// Where a glyph of a font without its program (`code`, at the
+    /// current text position) can be drawn or found, in page space: its
+    /// em square grown by an em on every side, its advance cell (as for
+    /// invisible text, 0.15 em past the advance), the `/FontBBox` its
+    /// font descriptor declares (a reader with the font installed draws
+    /// that), all under the text rendering matrix, then grown by the
+    /// stroke's reach under the CTM for stroked text. `None` when not
+    /// finite, or for text that clips (Tr 4–7: never bounded here).
+    fn glyph_box(&self, code: u32) -> Result<Option<(f64, f64, f64, f64)>, Error> {
+        let t = &self.gs.text;
+        if !(0..=3).contains(&t.render_mode) {
+            return Ok(None);
+        }
+        let trm =
+            crate::matrix::Matrix::new(t.font_size * t.h_scale, 0.0, 0.0, t.font_size, 0.0, t.rise)
+                .concat(self.text_tm)
+                .concat(self.gs.ctm);
+        let w = t.font.as_ref().map_or(0.0, |f| f.width(code) / 1000.0);
+        let (mut x0, mut y0, mut x1, mut y1) = (-1.0f64, -1.0f64, 2.0f64, 2.0f64);
+        x0 = x0.min(w.min(0.0) - 0.15);
+        x1 = x1.max(w.max(0.0) + 0.15);
+        if let Some(bb) = self.descriptor_font_bbox(&t.font_name)? {
+            x0 = x0.min(bb[0]);
+            y0 = y0.min(bb[1]);
+            x1 = x1.max(bb[2]);
+            y1 = y1.max(bb[3]);
+        }
+        let pts = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)].map(|(x, y)| trm.transform(x, y));
+        let mut b = (
+            pts.iter().map(|p| p.0).fold(f64::INFINITY, f64::min),
+            pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min),
+            pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max),
+            pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max),
+        );
+        if matches!(t.render_mode, 1 | 2) {
+            let r = stroke_reach(&self.gs.stroke) * ctm_max_scale(&self.gs.ctm);
+            b = (b.0 - r, b.1 - r, b.2 + r, b.3 + r);
+        }
+        Ok([b.0, b.1, b.2, b.3]
+            .iter()
+            .all(|v| v.is_finite())
+            .then_some(b))
+    }
+
+    /// The `/FontBBox` (in ems) of the font descriptor of font resource
+    /// `name`, when it declares one.
+    fn descriptor_font_bbox(&self, name: &[u8]) -> Result<Option<[f64; 4]>, Error> {
+        let Some(f) = self.doc.resolve_resource(&self.resources, "Font", name)? else {
+            return Ok(None);
+        };
+        let Some(fd) = f
+            .as_dict()
+            .and_then(|d| d.get(b"FontDescriptor".as_slice()))
+        else {
+            return Ok(None);
+        };
+        let fd = self.doc.deref(fd)?;
+        let Some(bb) = fd.as_dict().and_then(|d| d.get(b"FontBBox".as_slice())) else {
+            return Ok(None);
+        };
+        Ok(crate::page::Rect::from_object(&self.doc.deref(bb)?)
+            .map(|r| {
+                [
+                    r.llx / 1000.0,
+                    r.lly / 1000.0,
+                    r.urx / 1000.0,
+                    r.ury / 1000.0,
+                ]
+            })
+            .filter(|b| b.iter().all(|v| v.is_finite())))
+    }
+
     /// Report a glyph-processing failure as `uncertain` — never
     /// silently swap an error for the cell estimate. `LimitExceeded`
     /// is re-raised (it's a resource bound, not a glyph problem);
@@ -3098,12 +3485,21 @@ impl<'a> DiagWalker<'a> {
         if matches!(e, Error::LimitExceeded { .. }) {
             return Err(e);
         }
+        let unembedded =
+            matches!(&e, Error::Unsupported { feature, .. } if feature.starts_with("non-embedded"));
+        let far = self.probing_appearance > 0
+            && unembedded
+            && self
+                .glyph_box(code)?
+                .is_some_and(|b| hits_for(&b, self.rects).is_empty());
         // `site` says where the glyph is.
-        self.push_uncertain(Uncertain {
-            kind: TargetKind::Text,
-            site: self.text_site(self.code_index),
-            reason: format!("a glyph's outline cannot be evaluated: {e}"),
-        })?;
+        if !far {
+            self.push_uncertain(Uncertain {
+                kind: TargetKind::Text,
+                site: self.text_site(self.code_index),
+                reason: format!("a glyph's outline cannot be evaluated: {e}"),
+            })?;
+        }
         // Still advance — the *next* glyph's origin is determined by
         // the font's width table, which is separate from outlines.
         let (fs, hs, cs, ws) = {
@@ -3475,6 +3871,21 @@ impl<'a> DiagWalker<'a> {
         let saved_uncertain = self.uncertain_state;
         // Form space → the caller's user space (/Matrix) → page.
         self.gs.ctm = form_matrix.concat(self.gs.ctm);
+        let saved_base = std::mem::replace(&mut self.pattern_base, self.gs.ctm);
+        // A shading pattern colour inherited from the caller: some readers
+        // place it in this form's space — checked there too.
+        if self.redaction_mode {
+            for p in self.gs.shading_pat.clone().into_iter().flatten() {
+                if let Some(why) = self.pattern_shading_meets(Some(&p))? {
+                    self.push_blocker(Blocker {
+                        site: Some(self.site()),
+                        what: "shading pattern".into(),
+                        detail: format!("inherited into a form — {why}"),
+                    })?;
+                    self.uncertain_state = true;
+                }
+            }
+        }
         {
             let m = self.gs.ctm;
             if !((m.b == 0.0 && m.c == 0.0) || (m.a == 0.0 && m.d == 0.0)) {
@@ -3516,6 +3927,7 @@ impl<'a> DiagWalker<'a> {
             self.resources = r;
         }
         self.gs = self.gs_stack.pop().expect("pushed above");
+        self.pattern_base = saved_base;
         self.uncertain_state = saved_uncertain;
         self.form_path.pop();
         if pop_ref {

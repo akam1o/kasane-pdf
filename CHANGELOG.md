@@ -6,6 +6,13 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-23
+
+### Security
+- This version fixes security issues in redaction. Advisories with the
+  details will be published once it is available on crates.io;
+  upgrading is recommended for every application that uses `redact`.
+
 ### Added
 - Redaction: a page that sets a soft mask with `gs` is redacted when the
   mask's group draws nothing that meets a rect (its `/BBox` included,
@@ -29,7 +36,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   be rewritten exactly, or would take more than 16 million tokens, is
   left as it was (a glyph the interpreter itself refuses is left alone,
   the others rewritten). Bare CFF (`/Type1C`, `/CIDFontType0C`);
-  OpenType-wrapped CFF is not rewritten.
+  OpenType-wrapped CFF is not rewritten. The rewrite allocates within a
+  budget of 8 bytes per program byte plus 4 MiB, charged before each
+  allocation; a program it would exceed is left as it was.
 - Dense tiling patterns (more than 64 tiles in a fill) are drawn from
   a periodic texture of one step of the tiling, rendered once at up to
   8 pixels per device pixel and averaged over each device pixel's
@@ -60,8 +69,6 @@ versions follow [Semantic Versioning](https://semver.org/).
 - A stroke in a pattern colour (any width, text outlines included) is
   painted at the stroking alpha (`/CA`); it took the nonstroking alpha
   (`/ca`) of fills.
-
-### Fixed
 - Text extraction: a `/ToUnicode` CMap that defines a code more than
   once (a whole-range mapping refined by later `bfchar` or `bfrange`
   entries) gives the code its later definition, as the CMap is read in
@@ -1512,7 +1519,8 @@ are possible between minor versions and are recorded here.
   1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
   `docs/third-party.md`).
 
-[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/akam1o/kasane-pdf/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.12.0
 [0.11.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.11.0
 [0.10.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.10.0

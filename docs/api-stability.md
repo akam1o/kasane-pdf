@@ -135,7 +135,28 @@ rustdoc JSON.
   class of input is refused with `max_pattern_tiles`, and `rewrite`
   carries `/OCProperties`.
 
-## 0.12.0 (behaviour)
+## 0.13.0 (behaviour)
+
+- No signature changes: no public item is added, removed or changed
+  (`cargo semver-checks` against 0.12.0).
+- Behaviour that callers can observe changes, hence the minor version:
+  - dense tiling patterns (more than 64 tiles in a fill) are drawn from
+    a periodic texture: their pixels change (thin lines in small cells
+    are kept, no seams or drift), and fills whose cells overlap no
+    longer end in `max_pattern_tiles`;
+  - lines and glyph outlines of width 0 stroked with a pattern colour
+    are drawn (they were not), and pattern-coloured strokes take the
+    stroking alpha (`/CA`), not `/ca`;
+  - CFF glyphs whose charstrings carry `dotsection` are drawn (they were
+    empty): their pixels and glyph bounds change, and so does which
+    glyphs a redaction rect near them touches;
+  - extracted text follows the later definition of a code a
+    `/ToUnicode` CMap defines twice;
+  - `redact` succeeds on pages that set a soft mask with `gs` whose
+    group draws nothing that meets a rect (they were refused), and
+    refuses or removes in some cases it accepted before (the security
+    fixes of this version; their advisories say which).
+
 
 - No signature changes: no public item is added, removed or changed
   (`cargo semver-checks` against 0.11.0: no update required).
