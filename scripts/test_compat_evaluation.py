@@ -396,7 +396,14 @@ class ReviewedDifferences(unittest.TestCase):
             ({"env": dict(env, os=" ")}, "evidence missing: env os"),
             ({"env": dict(env, reference={k: v for k, v in E0.items() if k != "fonts_sha256"})},
              "evidence missing: env reference.fonts_sha256"),
-            ({"baseline": float("nan")}, "not a reviewed measure or value"),
+            ({"baseline": float("nan")}, "evidence missing: baseline"),
+            ({"reason": []}, "evidence missing: reason"),
+            ({"reason": float("nan")}, "evidence missing: reason"),
+            ({"measure": 3}, "evidence missing: measure"),
+            ({"page": True}, "evidence missing: page"),
+            ({"env": dict(env, reference=dict(E0, fontconfig="   "))}, "evidence missing: env reference.fontconfig"),
+            ({"env": dict(env, reference=dict(E0, font_files=float("nan")))},
+             "evidence missing: env reference.font_files"),
             ({"metric": "ssim"}, None),  # not an entry for this measure: nothing applies
         ]:
             rc, out = self.go(self.file(), self.att(kp=(0.02, 3.6)), self.entries(**over))

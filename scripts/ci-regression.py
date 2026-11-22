@@ -143,17 +143,29 @@ class Reviewed:
         compared ones, and every field of the reference fingerprint)."""
         if not isinstance(env, dict):
             return ["environment"]
-        gaps = [k for k in compat_env.COMPARED if k != "reference" and not str(env.get(k) or "").strip()]
+        gaps = [k for k in compat_env.COMPARED if k != "reference" and not Reviewed.filled(env.get(k))]
         ref = env.get("reference")
         if not isinstance(ref, dict):
             gaps.append("reference")
         else:
-            gaps += [f"reference.{k}" for k in compat_env.REFERENCE_FIELDS if ref.get(k) in (None, "")]
+            gaps += [f"reference.{k}" for k in compat_env.REFERENCE_FIELDS if not Reviewed.filled(ref.get(k))]
         return gaps
 
+    @staticmethod
+    def filled(v):
+        """A non-blank string or a finite number (not a boolean)."""
+        if isinstance(v, str):
+            return bool(v.strip())
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
     def why_not(self, e, was, now):
-        missing = [k for k in REVIEWED_FIELDS
-                   if e.get(k) is None or (isinstance(e.get(k), str) and not e[k].strip()) or e.get(k) == {}]
+        if not isinstance(e, dict):
+            return "evidence missing: not an entry"
+        strings = ("id", "sha256", "metric", "measure", "reason", "review")
+        missing = [k for k in REVIEWED_FIELDS if k not in e
+                   or (k in strings and not (isinstance(e[k], str) and e[k].strip()))
+                   or (k in ("page", "baseline", "reviewed") and not self.filled(e[k]))
+                   or (k == "env" and not (isinstance(e[k], dict) and e[k]))]
         if missing:
             return "evidence missing: " + ", ".join(missing)
         if not isinstance(e["sha256"], str) or len(e["sha256"]) != 64 \
