@@ -136,7 +136,12 @@ are on the [roadmap](architecture.md#roadmap).
   MuPDF). Denser fills use the periodic texture (CHANGELOG, Unreleased):
   inside it stroke adjustment (`/SA`) is not applied, and text drawn
   with a stroke of width 0 (text rendering modes 1, 2, 5, 6) is one
-  texture pixel wide rather than one device pixel. A cell whose texture
+  texture pixel wide rather than one device pixel; under a rotated or
+  skewed pattern matrix each device pixel is averaged in 2 × 2 parts
+  over their bounding boxes (the mean coverage is kept; edge pixels can
+  differ by some levels from the exact footprint). Overlapping cells
+  under a blend mode other than Normal are painted tile by tile, as are
+  fills of 64 tiles or fewer. A cell whose texture
   would exceed 2^21 pixels (a cell over about 1,400 device pixels
   across, with more than 64 tiles) is executed tile by tile, against
   `max_pattern_tiles`.

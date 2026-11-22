@@ -9,9 +9,10 @@ versions follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 - Dense tiling patterns (more than 64 tiles in a fill) are drawn from
   a periodic texture of one step of the tiling, rendered once at up to
-  8 pixels per device pixel and integrated exactly into each device
-  pixel (a summed-area table of the period), instead of one cell at
-  device size stamped with a bilinear shader:
+  8 pixels per device pixel and averaged over each device pixel's
+  footprint (a summed-area table of the period: exact under scaling and
+  flips, approximated in 2 × 2 parts under rotation or skew), instead
+  of one cell at device size stamped with a bilinear shader:
   - thin lines in cells of a pixel or two keep their coverage: they
     were drawn faintly, or not at all — the cached cell lost strokes
     thinner than a pixel when it was 2 pixels or less, and cells of
@@ -22,7 +23,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   - cells whose `/BBox` exceeds the step — overlapping tiles, including
     a step plus the rounding TikZ writes — are drawn the same way, the
     texture holding the cell and every neighbour that overlaps into it,
-    composited in the tiles' order (translucent overlaps included).
+    composited in the tiles' order with the fill alpha applied to each
+    (translucent overlaps included); overlapping cells under a blend
+    mode other than Normal are still painted tile by tile.
     Such fills executed every tile: seams, and on a large area a page
     refused at `max_pattern_tiles`. Each cell execution, neighbours
     included, still counts against `max_pattern_tiles`; the texture and

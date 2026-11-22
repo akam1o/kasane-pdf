@@ -18,18 +18,29 @@ const REGION: &str = "10 10 180 180 re";
 /// A page filling REGION with tiling pattern `/P` (`dict` and `cell`),
 /// with ExtGState `ext` for the cell.
 fn pattern_page(dict: &str, cell: &str, ext: &str) -> Vec<u8> {
+    pattern_page_with(dict, cell, ext, "", "")
+}
+
+/// [`pattern_page`] with page ExtGState `page_ext` set by `pre` before
+/// the fill.
+fn pattern_page_with(dict: &str, cell: &str, ext: &str, page_ext: &str, pre: &str) -> Vec<u8> {
     build_pdf(&[
         (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
         (
             3,
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
-              /Resources << /Pattern << /P 5 0 R >> >> >>"
-                .to_vec(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
+                 /Resources << /Pattern << /P 5 0 R >> {page_ext} >> >>"
+            )
+            .into_bytes(),
         ),
         (
             4,
-            stream_obj("", format!("/Pattern cs /P scn {REGION} f").as_bytes()),
+            stream_obj(
+                "",
+                format!("{pre} /Pattern cs /P scn {REGION} f").as_bytes(),
+            ),
         ),
         (
             5,
@@ -395,4 +406,131 @@ fn a_dense_pattern_inside_a_dense_cell_keeps_its_coverage() {
             "{dpi} dpi: {got:.2}, want {want:.2}"
         );
     }
+}
+
+/// 6 × 6 pt red squares every 4 pt, drawn one by one (the tiles, in
+/// order) after `pre`.
+fn squares_page(pre: &str, ext: &str) -> Vec<u8> {
+    let mut squares = String::new();
+    for j in 0..=48 {
+        for i in 0..=48 {
+            squares.push_str(&format!("{} {} 6 6 re f ", i * 4, j * 4));
+        }
+    }
+    plain_page(&format!("{pre} 1 0 0 rg {squares}"), ext)
+}
+
+#[test]
+fn the_fill_alpha_applies_to_each_overlapping_cell() {
+    // Opaque overlapping squares filled at /ca 0.5: each tile is
+    // painted at half opacity, so four overlapping squares are darker
+    // than one — as the squares drawn one by one.
+    let ext = "/ExtGState << /H << /ca 0.5 >> >>";
+    let pat = pattern_page_with(
+        "/BBox [0 0 6 6] /XStep 4 /YStep 4",
+        "1 0 0 rg 0 0 6 6 re f",
+        "",
+        ext,
+        "/H gs",
+    );
+    let plain = squares_page("/H gs", ext);
+    // At 72 dpi the squares' edges are on whole pixels: pixel for pixel.
+    // Elsewhere the squares drawn one by one conflate anti-aliased edges
+    // where squares meet, which the texture integrates: the mean.
+    for dpi in [72.0, 96.0, 150.0] {
+        let (a, b) = (draw(&pat, dpi), draw(&plain, dpi));
+        if dpi == 72.0 {
+            assert!(max_diff(&a, &b, dpi) <= 3.0, "{}", max_diff(&a, &b, dpi));
+        }
+        let (ma, mb) = (mean(&a, dpi), mean(&b, dpi));
+        assert!((ma - mb).abs() <= 1.0, "{dpi}: {ma} {mb}");
+        let px = |pt: f64| (pt * dpi / 72.0) as u32;
+        let (single, quad) = (grey(&a, px(15.0), px(185.0)), grey(&a, px(13.0), px(187.0)));
+        assert!(
+            quad < single - 20.0,
+            "{dpi}: single {single}, overlap {quad}"
+        );
+    }
+}
+
+#[test]
+fn overlapping_cells_under_a_blend_mode_blend_tile_by_tile() {
+    // Multiply over a grey page: each tile multiplies what is below,
+    // tiles included — not their composite.
+    let ext = "/ExtGState << /M << /BM /Multiply >> >>";
+    let pre = "0.6 g 0 0 200 200 re f /M gs";
+    let pat = pattern_page_with(
+        "/BBox [0 0 6 6] /XStep 4 /YStep 4",
+        "1 0 0 rg 0 0 6 6 re f",
+        "",
+        ext,
+        pre,
+    );
+    let plain = squares_page(pre, ext);
+    let (a, b) = (draw(&pat, 72.0), draw(&plain, 72.0));
+    assert!(max_diff(&a, &b, 72.0) <= 3.0, "{}", max_diff(&a, &b, 72.0));
+}
+
+#[test]
+fn a_line_of_width_0_is_one_device_pixel_under_any_scale() {
+    // Width-0 lines in a cell stretched 4 × along one axis or skewed:
+    // still one device pixel wide across, horizontal or vertical.
+    for (m, horizontal, spacing_pt) in [
+        ("4 0 0 1 0 0", true, 3.0),
+        ("1 0 0 4 0 0", true, 12.0),
+        ("1 0 0 4 0 0", false, 3.0),
+        ("4 0 0 1 0 0", false, 12.0),
+        ("1 0 0.7 1 0 0", true, 3.0),
+    ] {
+        let line = if horizontal {
+            "-1.5 0 m 1.5 0 l"
+        } else {
+            "0 -1.5 m 0 1.5 l"
+        };
+        let pdf = pattern_page(
+            &format!("/BBox [-1.5 -1.5 1.5 1.5] /XStep 3 /YStep 3 /Matrix [{m}]"),
+            &format!("0 0 1 RG 0 w {line} S"),
+            "",
+        );
+        for dpi in [96.0, 150.0] {
+            let r = draw(&pdf, dpi);
+            let (got, want) = (mean(&r, dpi), lines_expected(72.0 / (spacing_pt * dpi)));
+            assert!(
+                (got - want).abs() <= 3.0,
+                "[{m}] {horizontal} at {dpi} dpi: {got:.2}, want {want:.2}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_dense_cell_painting_with_its_own_pattern_is_still_a_cycle() {
+    // The cell fills itself with /P, inside its /BBox: drawn content that
+    // recurses is refused, in the texture as tile by tile.
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
+              /Resources << /Pattern << /P 5 0 R >> >> >>"
+                .to_vec(),
+        ),
+        (
+            4,
+            stream_obj("", format!("/Pattern cs /P scn {REGION} f").as_bytes()),
+        ),
+        (
+            5,
+            stream_obj(
+                "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 4 4] /XStep 4 /YStep 4 \
+                 /Resources << /Pattern << /P 5 0 R >> >>",
+                b"/Pattern cs /P scn 1 1 2 2 re f",
+            ),
+        ),
+    ]);
+    assert!(matches!(
+        render(&pdf, 96.0, Limits::default()),
+        Err(Error::CycleDetected { .. })
+    ));
 }

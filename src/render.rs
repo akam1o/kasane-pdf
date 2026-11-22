@@ -605,6 +605,7 @@ pub fn render_page(
         pattern_tiles: 0,
         uncolored_depth: 0,
         texel_scale: 1.0,
+        device_to_target: Transform::identity(),
         oc: crate::optcontent::OcConfig::from_catalog(doc)?,
         oc_include_hidden: false,
         mc_stack: Vec::new(),
@@ -1909,6 +1910,11 @@ pub(crate) struct Renderer<'a> {
     /// width 0 is one device pixel wide, and stroke adjustment is off,
     /// there.
     texel_scale: f64,
+    /// Device pixels → the current target's pixels: identity on the
+    /// page, the exact (possibly anisotropic) map into a supersampled
+    /// tiling texture. A line of width 0 is stroked one device pixel wide
+    /// through it.
+    device_to_target: Transform,
     /// Optional-content configuration of the document (§8.11).
     oc: crate::optcontent::OcConfig,
     /// Extraction only: report text inside hidden optional content too
@@ -2290,6 +2296,7 @@ impl<'a> Renderer<'a> {
             pattern_tiles: 0,
             uncolored_depth: 0,
             texel_scale: 1.0,
+            device_to_target: Transform::identity(),
             oc: crate::optcontent::OcConfig::from_catalog(doc)?,
             oc_include_hidden: false,
             mc_stack: Vec::new(),
@@ -6656,6 +6663,10 @@ impl<'a> Renderer<'a> {
         // overlap, §8.7.3.1). It costs that many cell executions, counted
         // as tiles; it is used when there are more tiles than DIRECT_TILES
         // and it executes fewer cells than the tiles it replaces.
+        // Overlapping cells under a blend mode other than Normal are
+        // painted tile by tile: blending each onto what is below is not
+        // the blend of their composite (source-over, which the texture
+        // uses, composes either way).
         let wrapped =
             tiling_reach(bb.urx - bb.llx, tp.xstep) * tiling_reach(bb.ury - bb.lly, tp.ystep);
         let texture = (cell_w.is_finite()
@@ -6663,7 +6674,8 @@ impl<'a> Renderer<'a> {
             && cell_w >= 1e-3
             && cell_h >= 1e-3
             && tiles > DIRECT_TILES as f64
-            && wrapped < tiles)
+            && wrapped < tiles
+            && (wrapped == 1.0 || self.gs.blend_mode == tiny_skia::BlendMode::SourceOver))
             .then(|| self.texture_plan(cell_w, cell_h))
             .flatten();
         let direct = texture.is_none();
@@ -6765,20 +6777,52 @@ impl<'a> Renderer<'a> {
 
     /// Fresh graphics state for one cell: `ctm` as the CTM, the outer
     /// fill colour for an uncoloured pattern, `clip` as the clip.
-    /// The graphics state's stroke for a path drawn through `ts` on the
-    /// current target: in a supersampled texture, a line of width 0 (one
-    /// device pixel, §8.4.3.2) is `texel_scale` pixels of it wide.
-    fn target_stroke(&self, ts: Transform) -> Stroke {
-        let mut stroke = gs_stroke(&self.gs);
-        if self.gs.line_width == 0.0 && self.texel_scale > 1.0 {
-            let scale = (ts.sx as f64 * ts.sy as f64 - ts.kx as f64 * ts.ky as f64)
-                .abs()
-                .sqrt();
-            if scale.is_normal() {
-                stroke.width = (self.texel_scale / scale) as f32;
-            }
-        }
-        stroke
+    /// Stroke `path` (drawn through `ts`) as a line of width 0 inside a
+    /// supersampled tiling texture: one device pixel wide in every
+    /// direction (§8.4.3.2), whatever the texture's scale along each
+    /// axis — the path is taken to device pixels (dashed there first,
+    /// within the dash budget, in its own space), stroked 1 wide, and
+    /// the outline mapped into the texture.
+    fn stroke_device_hairline(
+        &mut self,
+        path: &tiny_skia::Path,
+        paint: &Paint,
+        stroke: &Stroke,
+        ts: Transform,
+    ) -> Result<(), Error> {
+        let dash = self.gs.dash.as_ref().map_or(&[][..], |d| &d.0);
+        let path = match dashed_stroke(
+            path,
+            stroke,
+            dash,
+            ts,
+            self.pixmap.width(),
+            self.pixmap.height(),
+            &mut self.dash_work,
+        )? {
+            DashedStroke::Undashed => path.clone(),
+            DashedStroke::Nothing => return Ok(()),
+            DashedStroke::Segments(p, _) => p,
+        };
+        let Some(to_device) = self.device_to_target.invert() else {
+            return Ok(());
+        };
+        let Some(device_path) = path.transform(ts.post_concat(to_device)) else {
+            return Ok(());
+        };
+        let one = Stroke {
+            width: 1.0,
+            dash: None,
+            ..stroke.clone()
+        };
+        self.pixmap.stroke_path(
+            &device_path,
+            paint,
+            &one,
+            self.device_to_target,
+            self.gs.clip_mask(),
+        );
+        Ok(())
     }
 
     fn reset_cell_state(&mut self, tp: &TilingPattern, ctm: Matrix, clip: Option<Rc<GsMask>>) {
@@ -6907,16 +6951,19 @@ impl<'a> Renderer<'a> {
     /// tiling in pattern space, rendered once at `plan`'s size — the
     /// cell, then every earlier neighbour whose /BBox reaches into the
     /// step (overlapping tiles, in the order the tiles are painted),
-    /// each clipped to its /BBox — then integrated into the device: each
-    /// device pixel is the exact average of the periodic texture over
-    /// its footprint (a summed-area table of one period, `PeriodicSat`;
-    /// a rotated or skewed footprint is split into
-    /// [`TEXTURE_SKEW_SPLIT`]² parts, each taken over its bounding box).
-    /// Nothing is rounded to whole pixels and nothing is interpolated,
-    /// so tiles neither blur, drift nor leave seams, and a cell smaller
-    /// than a pixel contributes its true average. The result is
-    /// composited through `mask` with the fill alpha and blend mode, as
-    /// one group, a strip of rows at a time.
+    /// each clipped to its /BBox — then integrated into the device from
+    /// a summed-area table of one period (`PeriodicSat`): under scaling,
+    /// flips and quarter turns each device pixel is the exact average of
+    /// the periodic texture over its footprint; a rotated or skewed
+    /// footprint is approximated by [`TEXTURE_SKEW_SPLIT`]² parts, each
+    /// averaged over its bounding box (the mean coverage is kept, single
+    /// pixels at an edge can differ from the exact footprint). Nothing is
+    /// rounded to whole pixels and nothing is interpolated, so tiles
+    /// neither drift nor leave seams, and a cell smaller than a pixel
+    /// contributes its average. Cells that do not overlap are composited
+    /// through `mask` with the fill alpha and blend mode as one group;
+    /// overlapping cells carry the alpha each (see below). A strip of
+    /// rows at a time.
     #[allow(clippy::too_many_arguments)]
     fn paint_tiles_texture(
         &mut self,
@@ -6967,17 +7014,40 @@ impl<'a> Renderer<'a> {
             &mut self.user_to_pix_exact,
             Matrix::new(sx, 0.0, 0.0, sy, ox, oy),
         );
-        // Texture pixels per device pixel (geometric mean of the axes).
+        // Texture pixels per device pixel (geometric mean of the axes),
+        // and device pixels → texture: device → the current target →
+        // pattern space (m inverted) → texture.
         let saved_scale = self.texel_scale;
         self.texel_scale = saved_scale * ((sx / unit_x) * (sy / unit_y)).sqrt();
+        let target_to_pattern = Transform::from_row(
+            (m.d / det) as f32,
+            (-m.b / det) as f32,
+            (-m.c / det) as f32,
+            (m.a / det) as f32,
+            ((m.c * m.f - m.d * m.e) / det) as f32,
+            ((m.b * m.e - m.a * m.f) / det) as f32,
+        );
+        let saved_device = self.device_to_target;
+        self.device_to_target = saved_device
+            .post_concat(target_to_pattern)
+            .post_concat(tex_ts);
         self.layer_bytes += bytes;
+        // Cells that do not overlap: alpha and blend are reset in the
+        // cell and applied once to the result, as to a group. Cells that
+        // overlap: each runs with the fill and stroke alpha, as when the
+        // tiles are painted one by one, and the texture is composited
+        // opaque — source-over composes, so where cells overlap the
+        // result is the tiles painted in order.
+        let per_cell = nx * ny > 1;
         let r = (|| -> Result<(), Error> {
-            // Alpha and blend are reset in the cell and applied once to
-            // the result.
             for dj in (1 - ny)..=0 {
                 for di in (1 - nx)..=0 {
                     let at = Matrix::translate(di as f64 * tp.xstep, dj as f64 * tp.ystep);
                     self.reset_cell_state(tp, at, None);
+                    if per_cell {
+                        self.gs.fill_alpha = alpha.0;
+                        self.gs.stroke_alpha = alpha.1;
+                    }
                     self.intersect_clip_rect(&tp.bbox)?;
                     self.run(ops)?;
                 }
@@ -6985,6 +7055,7 @@ impl<'a> Renderer<'a> {
             Ok(())
         })();
         self.texel_scale = saved_scale;
+        self.device_to_target = saved_device;
         self.user_to_pix = saved_u2p;
         self.user_to_pix_exact = saved_u2p_exact;
         std::mem::swap(&mut *self.pixmap, &mut tex);
@@ -7013,7 +7084,11 @@ impl<'a> Renderer<'a> {
             return Err(Error::Structure("pattern layer allocation failed".into()));
         };
         let paint = tiny_skia::PixmapPaint {
-            opacity: clamp01(alpha.0) as f32,
+            opacity: if per_cell {
+                1.0
+            } else {
+                clamp01(alpha.0) as f32
+            },
             blend_mode: alpha.2,
             quality: tiny_skia::FilterQuality::Nearest,
         };
@@ -7058,16 +7133,12 @@ impl<'a> Renderer<'a> {
                         }
                     }
                 }
-                let strip = if rows == strip_h {
-                    None
-                } else {
-                    tiny_skia::IntRect::from_xywh(0, 0, strip_w, rows)
-                        .and_then(|r| layer.clone_rect(r))
-                };
+                // A last, shorter strip leaves the layer's other rows
+                // transparent: drawn whole, they change nothing.
                 self.pixmap.draw_pixmap(
                     dev.0,
                     y0,
-                    strip.as_ref().map_or(layer.as_ref(), |p| p.as_ref()),
+                    layer.as_ref(),
                     &paint,
                     Transform::identity(),
                     Some(mask),
@@ -8054,7 +8125,7 @@ impl<'a> Renderer<'a> {
         let stroke = match kind {
             PaintKind::Fill(_) => gs_stroke(&self.gs),
             _ => bounded_stroke(
-                &self.target_stroke(ts),
+                &gs_stroke(&self.gs),
                 ts,
                 &path,
                 self.pixmap.width(),
@@ -8134,16 +8205,20 @@ impl<'a> Renderer<'a> {
                     paint.set_color(ts_color(
                         self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
                     ));
-                    stroke_bounded(
-                        self.pixmap,
-                        &mut self.dash_work,
-                        &path,
-                        &paint,
-                        &stroke,
-                        self.gs.dash.as_ref().map_or(&[][..], |d| &d.0),
-                        ts,
-                        self.gs.clip_mask(),
-                    )?;
+                    if self.gs.line_width == 0.0 && self.texel_scale > 1.0 {
+                        self.stroke_device_hairline(&path, &paint, &stroke, ts)?;
+                    } else {
+                        stroke_bounded(
+                            self.pixmap,
+                            &mut self.dash_work,
+                            &path,
+                            &paint,
+                            &stroke,
+                            self.gs.dash.as_ref().map_or(&[][..], |d| &d.0),
+                            ts,
+                            self.gs.clip_mask(),
+                        )?;
+                    }
                 }
             }
             Some(PaintKind::Fill(rule)) => {
@@ -8173,16 +8248,20 @@ impl<'a> Renderer<'a> {
                     paint.set_color(ts_color(
                         self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
                     ));
-                    stroke_bounded(
-                        self.pixmap,
-                        &mut self.dash_work,
-                        &path,
-                        &paint,
-                        &stroke,
-                        self.gs.dash.as_ref().map_or(&[][..], |d| &d.0),
-                        ts,
-                        self.gs.clip_mask(),
-                    )?;
+                    if self.gs.line_width == 0.0 && self.texel_scale > 1.0 {
+                        self.stroke_device_hairline(&path, &paint, &stroke, ts)?;
+                    } else {
+                        stroke_bounded(
+                            self.pixmap,
+                            &mut self.dash_work,
+                            &path,
+                            &paint,
+                            &stroke,
+                            self.gs.dash.as_ref().map_or(&[][..], |d| &d.0),
+                            ts,
+                            self.gs.clip_mask(),
+                        )?;
+                    }
                 }
             }
         }
