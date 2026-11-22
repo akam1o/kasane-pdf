@@ -9,9 +9,33 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [0.13.0] - 2026-11-23
 
 ### Security
-- This version fixes security issues in redaction. Advisories with the
-  details will be published once it is available on crates.io;
-  upgrading is recommended for every application that uses `redact`.
+- Annotation appearances beyond their box (GHSA-pp5g-3qw2-h45w,
+  Medium): `redact` decided which annotations meet a rect from their
+  `/Rect` only. An appearance stream that draws beyond its `/BBox`
+  (hidden there by the `/BBox` clip) at a position inside a rect, its
+  annotation's `/Rect` clear of the rect, was kept with that content —
+  text Poppler's `pdftotext` returns at that position — and the
+  redaction reported verified (0.6.0–0.12.0). An annotation now meets a
+  rect when anything its appearance streams draw does (normal, down and
+  rollover, every state, what the `/BBox` or a clip hides included): it
+  is removed or the redaction refused as for one whose `/Rect` meets
+  it; an appearance that cannot be bounded is refused. A glyph of a
+  font without its program in an appearance is bounded by its em square
+  grown by an em on every side, its advance cell and its descriptor's
+  `/FontBBox` (grown by the stroke for stroked text).
+- Shading geometry under a clip away from the rects
+  (GHSA-844w-wgrm-c4q8, Low): a shading painted with `sh` under a
+  rectangular clip meeting no rect was kept whatever its own geometry —
+  mesh vertices, radial circles, a function-based shading's domain and
+  samples inside a rect stayed in the file (0.6.0–0.12.0; the 0.6.0
+  entry below called it a deliberate exception, which the safety model
+  did not list). Such a shading is now kept only when its geometry
+  (its `/BBox` being one more clip) meets no rect; shading patterns used
+  as a colour are checked the same way in pattern space, in the stream
+  that selects them and in each form they are inherited into. A radial
+  or function-based shading whose geometry covers the page now refuses
+  redaction on that page. Axial shadings keep their axis and function
+  (scope clarified in docs/redaction-safety-model.md, not changed).
 
 ### Added
 - Redaction: a page that sets a soft mask with `gs` is redacted when the

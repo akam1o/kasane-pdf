@@ -289,6 +289,10 @@
    "outcome": "refused",
    "renderers": {}
   },
+  "adv:844w-mesh": {
+   "outcome": "refused",
+   "renderers": {}
+  },
   "adv:92wc-link-catalog": {
    "outcome": "refused",
    "renderers": {}
@@ -472,6 +476,180 @@
   "adv:frr2-tm-cancelled-by-cm": {
    "outcome": "refused",
    "renderers": {}
+  },
+  "adv:pp5g-down-appearance": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 47,
+     "changed": 176,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 41,
+     "changed": 179,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 47,
+     "changed": 176,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "adv:pp5g-link": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 41,
+     "changed": 179,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 47,
+     "changed": 336,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "adv:pp5g-matrix": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 30,
+     "changed": 268,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 22,
+     "changed": 275,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 36,
+     "changed": 256,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "adv:pp5g-nested-form": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 47,
+     "changed": 176,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 41,
+     "changed": 179,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 47,
+     "changed": 176,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "adv:pp5g-square": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 47,
+     "changed": 176,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 41,
+     "changed": 179,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 47,
+     "changed": 176,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "adv:pp5g-widget": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 47,
+     "changed": 176,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 41,
+     "changed": 179,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 47,
+     "changed": 176,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
   },
   "adv:vph3-objstm": {
    "outcome": "refused",
@@ -1642,7 +1820,7 @@
  },
  "dpi": 72,
  "platform": "linux-x86_64",
- "reason": "adds the three GHSA-4q38-qhh6-c256 advisory inputs (refused), proposed by pr.yml run 44452854098 on main e1e11ab and checked case by case: 113 cases, the 110 earlier ones unchanged",
+ "reason": "adds the seven GHSA-pp5g-3qw2-h45w and GHSA-844w-wgrm-c4q8 advisory inputs (six removed, one refused), measured in an Ubuntu 24.04 x86_64 container with the CI runner's Poppler 24.02.0, MuPDF 1.23.10 and pdf.js 6.5.438: the 113 earlier cases unchanged, each new one checked case by case",
  "schema_version": 1,
  "tools": {
   "mupdf": "1.23.10",
