@@ -193,7 +193,8 @@ are on the [roadmap](architecture.md#roadmap).
   word or line grouping, or search.
 - A code the font cannot map to Unicode is reported as `None`, never
   guessed — including codes whose `/ToUnicode` entry was malformed
-  and skipped (recorded as `Warning::MalformedToUnicodeEntry`). Text
+  and skipped (recorded as `Warning::MalformedToUnicodeEntry`). A code
+  the CMap defines twice takes its later definition. Text
   drawn through optional content that is OFF is excluded;
   `/ActualText` replaces the drawn codes.
 - Without `/ToUnicode` (`ResolveKind` tells which source answered):

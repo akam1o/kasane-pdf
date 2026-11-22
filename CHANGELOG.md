@@ -6,6 +6,14 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Text extraction: a `/ToUnicode` CMap that defines a code more than
+  once (a whole-range mapping refined by later `bfchar` or `bfrange`
+  entries) gives the code its later definition, as the CMap is read in
+  order and as the encoding CMaps already were; the first definition was
+  kept. Rendering is unchanged; the extracted text — and what
+  `redact`'s text checks search — follows the later mapping.
+
 ## [0.12.0] - 2026-11-21
 
 ### Changed
