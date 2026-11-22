@@ -47,7 +47,15 @@ property cannot be decided).
   substitute, shadings crossing a rect (other than the axial ones below),
   tiling patterns crossing a rect (other than the rectangles below),
   names an appearance stream does not resolve in its own resources,
-  annotations whose appearance is not placed by `/Rect`.
+  annotations whose appearance is not placed by `/Rect`, a soft mask set
+  by `gs` whose group draws anything that meets a rect (its `/BBox`
+  included, and what its `/BBox` or a clip hides), paints a shading or
+  with a pattern (their data reach past what they paint), or draws
+  anything that cannot be bounded.
+- **G** — A soft mask set by `gs` whose group draws nothing that meets a
+  rect is kept whole: its group, read under the CTM of the `gs` from the
+  initial graphics state, is never edited. Content painted under it is
+  redacted as any other.
 - **G** — Crossing a rect (0.10): a filled shape is clipped to the plane
   outside the rects (curves exact where no cut crosses them, the fill
   rule kept; nothing of its geometry inside stays); an axial shading
