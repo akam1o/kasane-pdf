@@ -765,3 +765,55 @@ fn a_pattern_coloured_glyph_outline_of_width_0_is_drawn_in_the_texture() {
         );
     }
 }
+
+#[test]
+fn pattern_coloured_strokes_take_the_stroking_alpha() {
+    // /CA 0.2 with /ca 1: lines (width 0 and 1) and width-0 glyph
+    // outlines stroked in an all-black pattern colour are as translucent
+    // as the same strokes in black (before: the pattern took /ca).
+    let ext = "/ExtGState << /G << /CA 0.2 /ca 1 >> >>";
+    let mut lines = String::new();
+    for k in 0..12 {
+        let v = 14.3 + 14.0 * k as f64;
+        lines.push_str(&format!("{v} 10 m {v} 190 l 10 {v} m 190 {v} l "));
+    }
+    let page = |content: &str| {
+        build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
+                     /Resources << /Pattern << /Q 5 0 R >> {ext} \
+                     /Font << /F << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>"
+                )
+                .into_bytes(),
+            ),
+            (
+                4,
+                stream_obj("", format!("q {REGION} W n /G gs {content} Q").as_bytes()),
+            ),
+            (
+                5,
+                stream_obj(
+                    "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 4 4] /XStep 4 /YStep 4 \
+                     /Resources << >>",
+                    b"0 g 0 0 4 4 re f",
+                ),
+            ),
+        ])
+    };
+    let text = "BT /F 40 Tf 1 Tr 20 60 Td (HOH) Tj ET";
+    for (what, body) in [
+        ("width 0", format!("0 w {{c}} {lines} S")),
+        ("width 1", format!("1 w {{c}} {lines} S")),
+        ("text", format!("0 w {{c}} {text}")),
+    ] {
+        let pat = draw(&page(&body.replace("{c}", "/Pattern CS /Q SCN")), 96.0);
+        let solid = draw(&page(&body.replace("{c}", "0 G")), 96.0);
+        let (a, b) = (mean(&pat, 96.0), mean(&solid, 96.0));
+        assert!(b < 254.9, "{what}: {b}");
+        assert!((a - b).abs() <= 0.5, "{what}: pattern {a:.2}, black {b:.2}");
+    }
+}

@@ -6581,7 +6581,7 @@ impl<'a> Renderer<'a> {
         let Some(pat) = self.gs.stroke_pattern.clone() else {
             return Ok(());
         };
-        if stroke.width == 0.0 {
+        let (outline, ts) = if stroke.width == 0.0 {
             // A line of width 0 is one device pixel wide (§8.4.3.2): its
             // one-pixel outline in device space, mapped to the target.
             let Some((device_path, one)) = self.device_hairline(path, stroke, ts)? else {
@@ -6590,19 +6590,22 @@ impl<'a> Renderer<'a> {
             let Some(outline) = device_path.stroke(&one, 1.0) else {
                 return Ok(());
             };
-            return self.fill_path_with_pattern(
-                pat,
-                &outline,
-                FillRule::Winding,
-                self.device_to_target,
-            );
-        }
-        let stroke = &bounded_stroke(stroke, ts, path, self.pixmap.width(), self.pixmap.height())?;
-        let scale = (ts.sx * ts.sy - ts.kx * ts.ky).abs().sqrt().max(0.01);
-        let Some(outline) = path.stroke(stroke, scale) else {
-            return Ok(());
+            (outline, self.device_to_target)
+        } else {
+            let stroke =
+                &bounded_stroke(stroke, ts, path, self.pixmap.width(), self.pixmap.height())?;
+            let scale = (ts.sx * ts.sy - ts.kx * ts.ky).abs().sqrt().max(0.01);
+            let Some(outline) = path.stroke(stroke, scale) else {
+                return Ok(());
+            };
+            (outline, ts)
         };
-        self.fill_path_with_pattern(pat, &outline, FillRule::Winding, ts)
+        // The outline is filled through the pattern at the stroking
+        // alpha (/CA), not the nonstroking one the fill takes.
+        let fill_alpha = std::mem::replace(&mut self.gs.fill_alpha, self.gs.stroke_alpha);
+        let r = self.fill_path_with_pattern(pat, &outline, FillRule::Winding, ts);
+        self.gs.fill_alpha = fill_alpha;
+        r
     }
 
     /// Paint `pat` wherever `mask` has coverage (the mask already

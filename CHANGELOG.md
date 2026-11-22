@@ -34,6 +34,9 @@ versions follow [Semantic Versioning](https://semver.org/).
 - A line or glyph outline of width 0 stroked with a pattern colour is
   drawn one device pixel wide; it was not drawn at all (the outline of
   a width-0 stroke is empty).
+- A stroke in a pattern colour (any width, text outlines included) is
+  painted at the stroking alpha (`/CA`); it took the nonstroking alpha
+  (`/ca`) of fills.
 
 ### Fixed
 - Text extraction: a `/ToUnicode` CMap that defines a code more than
