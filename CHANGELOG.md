@@ -12,8 +12,10 @@ versions follow [Semantic Versioning](https://semver.org/).
   treated as overlapping tiles: they are drawn from the cached cell like
   any pattern of one-step cells. Each tile was executed on its own,
   which left lighter seams where tiles meet, and on a large area
-  exceeded `max_pattern_tiles` and refused the page. An excess of at
-  least 1/256 of a device pixel still counts as an overlap.
+  exceeded `max_pattern_tiles` and refused the page. This applies to
+  cells of at least a device pixel each way and an excess under 1/256 of
+  a pixel; a larger excess, or any excess on smaller cells, still counts
+  as an overlap.
 
 ## [0.12.0] - 2026-11-21
 

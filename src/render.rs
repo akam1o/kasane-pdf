@@ -6536,15 +6536,24 @@ impl<'a> Renderer<'a> {
         }
         let cell_w = (pat_ts.sx * tp.xstep as f32).hypot(pat_ts.ky * tp.xstep as f32);
         let cell_h = (pat_ts.kx * tp.ystep as f32).hypot(pat_ts.sy * tp.ystep as f32);
-        // Tiles overlap when the /BBox exceeds the step by a visible
-        // amount. Producers that write reals to a few decimals give a
-        // /BBox of one step plus rounding (TikZ: 2 × 1.49442 for a 2.98883
-        // step); that excess, under OVERLAP_MIN_PX of a device pixel, is
-        // dropped with the cached cell instead of forcing every tile to
-        // be executed (seams where tiles meet, and max_pattern_tiles on
-        // large areas).
+        // Tiles overlap when the /BBox exceeds the step. Producers that
+        // write reals to a few decimals give a /BBox of one step plus
+        // rounding (TikZ: 2 × 1.49442 for a 2.98883 step); an excess under
+        // OVERLAP_MIN_PX of a device pixel, on cells of at least a pixel
+        // each way, is dropped with the cached cell instead of forcing
+        // every tile to be executed (seams where tiles meet, and
+        // max_pattern_tiles on large areas). A pixel then meets at most
+        // two tiles along an axis, so what is dropped covers under
+        // OVERLAP_MIN_PX of it — below one of 255 levels. Smaller cells,
+        // where many tiles' excesses could add up in a pixel, still count
+        // any excess.
         let exceeds = |extent: f64, step: f64, device: f32| {
-            extent > step * (1.0 + 1e-6) && (extent - step) / step * device as f64 >= OVERLAP_MIN_PX
+            let excess = (extent - step) / step * device as f64;
+            if device >= 1.0 {
+                excess >= OVERLAP_MIN_PX
+            } else {
+                extent > step * (1.0 + 1e-6)
+            }
         };
         let overlap = exceeds(bb.urx - bb.llx, tp.xstep, cell_w)
             || exceeds(bb.ury - bb.lly, tp.ystep, cell_h);

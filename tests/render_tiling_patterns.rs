@@ -435,6 +435,35 @@ fn a_bbox_over_the_step_by_rounding_is_not_an_overlap() {
 }
 
 #[test]
+fn an_excess_on_cells_under_a_pixel_is_still_an_overlap() {
+    // 0.1 pt cells (0.1 px at 72 dpi) with paint only in a 0.0038 pt
+    // excess: a pixel meets ten tiles, so the excesses add up (Poppler
+    // and MuPDF draw them grey). They are executed, and bounded: refused
+    // here, as before, never drawn without them.
+    let strip = pattern(
+        "/PaintType 1 /TilingType 1 /BBox [0 0 0.1038 1] /XStep 0.1 /YStep 1 /Resources << >>",
+        b"0 0 0 rg 0.1 0 0.0038 1 re f",
+    );
+    let err = render(&page(
+        b"/Pattern cs /P scn 0 0 100 100 re f",
+        &[("P", 10)],
+        "",
+        vec![(10, strip)],
+    ))
+    .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::LimitExceeded {
+                limit: "max_pattern_tiles",
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+#[test]
 fn malformed_patterns_are_refused() {
     for dict in [
         "/PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 0 /YStep 20 /Resources << >>",
