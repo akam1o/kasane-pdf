@@ -63,7 +63,9 @@ use crate::error::Error;
 use crate::limits::Limits;
 use crate::matrix::Matrix;
 use crate::object::{Dict, IndirectRef, Object};
-use crate::redact_diag::{check_rect, page_dict_entry, DiagWalker, Site, TargetDetail, TargetKind};
+use crate::redact_diag::{
+    check_rect, page_dict_entry, DiagWalker, Probe, Site, TargetDetail, TargetKind,
+};
 use crate::remove_image::{
     decode_image, fresh_xobject_name, image_pixel_ranges, is_default_decode, validate_image,
 };
@@ -919,6 +921,104 @@ fn has_normal_appearance(doc: &Document, d: &Dict) -> Result<bool, Error> {
         .is_some_and(|n| !matches!(n, Object::Null)))
 }
 
+/// Whether an appearance stream of annotation `d` (normal, down or
+/// rollover, every state) draws anything that meets a rect, as placed on
+/// the page (§12.5.5, Algorithm 8.1: its `/BBox` under its `/Matrix`
+/// fitted to `rect`) — what its `/BBox` hides included — or cannot be
+/// bounded (no `/BBox`, a `/Matrix` that is not one, a transformed
+/// `/BBox` that is degenerate, content that cannot be placed).
+fn appearance_meets_rects(
+    doc: &Document,
+    d: &Dict,
+    rect: &crate::page::Rect,
+    probe: &mut DiagWalker,
+) -> Result<Probe, Error> {
+    let Some(ap) = d.get(b"AP".as_slice()) else {
+        return Ok(Probe::Clear);
+    };
+    let ap = doc.deref(ap)?;
+    let Some(ap) = ap.as_dict() else {
+        return Ok(Probe::Clear);
+    };
+    let mut forms = Vec::new();
+    for key in [b"N".as_slice(), b"D", b"R"] {
+        let Some(v) = ap.get(key) else { continue };
+        match doc.deref(v)? {
+            Object::Stream { .. } => forms.push(v.clone()),
+            Object::Dict(states) => forms.extend(states.values().cloned()),
+            _ => {}
+        }
+    }
+    let (rx0, ry0) = (rect.llx.min(rect.urx), rect.lly.min(rect.ury));
+    let (rx1, ry1) = (rect.llx.max(rect.urx), rect.lly.max(rect.ury));
+    for f in forms {
+        let fo = doc.deref(&f)?;
+        let Some((fd, _)) = fo.as_stream() else {
+            continue; // not drawn (an invalid state is refused elsewhere)
+        };
+        let Some(bb) = fd
+            .get(b"BBox".as_slice())
+            .map(|o| doc.deref(o))
+            .transpose()?
+            .and_then(|o| crate::page::Rect::from_object(&o))
+        else {
+            return Ok(Probe::Unbounded(
+                "an appearance without a valid /BBox".into(),
+            ));
+        };
+        let m = match fd
+            .get(b"Matrix".as_slice())
+            .map(|o| doc.deref(o))
+            .transpose()?
+        {
+            None | Some(Object::Null) => crate::matrix::Matrix::IDENTITY,
+            Some(o) => match o.as_array().and_then(|a| {
+                (a.len() == 6)
+                    .then(|| {
+                        a.iter()
+                            .map(|x| x.as_number())
+                            .collect::<Option<Vec<f64>>>()
+                    })
+                    .flatten()
+            }) {
+                Some(v) => crate::matrix::Matrix::new(v[0], v[1], v[2], v[3], v[4], v[5]),
+                None => {
+                    return Ok(Probe::Unbounded(
+                        "an appearance /Matrix that is not one".into(),
+                    ))
+                }
+            },
+        };
+        let pts = [
+            (bb.llx, bb.lly),
+            (bb.urx, bb.lly),
+            (bb.llx, bb.ury),
+            (bb.urx, bb.ury),
+        ]
+        .map(|(x, y)| m.transform(x, y));
+        let bx0 = pts.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+        let by0 = pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+        let bx1 = pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+        let by1 = pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+        let (bw, bh) = (bx1 - bx0, by1 - by0);
+        if !(bw > 0.0 && bh > 0.0 && bw.is_finite() && bh.is_finite()) {
+            return Ok(Probe::Unbounded(
+                "an appearance whose /BBox is degenerate".into(),
+            ));
+        }
+        let (sx, sy) = ((rx1 - rx0) / bw, (ry1 - ry0) / bh);
+        let a = crate::matrix::Matrix::new(sx, 0.0, 0.0, sy, rx0 - sx * bx0, ry0 - sy * by0);
+        // An appearance that cannot be read cannot be bounded: the
+        // redaction is refused (as its content would be where it meets a
+        // rect).
+        match probe.form_meets_rects(&f, a)? {
+            Probe::Clear => {}
+            other => return Ok(other),
+        }
+    }
+    Ok(Probe::Clear)
+}
+
 /// The page-space bounds of an annotation's geometry keys (`/L`,
 /// `/InkList`, `/Vertices`, `/QuadPoints`, `/CL`), from which a reader
 /// draws an annotation that has no appearance stream.
@@ -1440,6 +1540,34 @@ pub(crate) fn regions_edit_session_with<'a>(
                 .as_array()
                 .ok_or_else(|| Error::Structure("/Annots is not an array".into()))?;
             // First pass: each annotation, and whether it meets a rect.
+            // What an appearance draws beyond its /BBox is data placed
+            // there too (a clip hides ink, not data): each appearance is
+            // walked as placed on the page (`appearance_meets_rects`).
+            let left = |max: u64, spent: u64, limit: &'static str| {
+                max.checked_sub(spent)
+                    .ok_or(Error::LimitExceeded { limit, max })
+            };
+            let probe_limits = Limits {
+                max_diag_exec_ops: left(
+                    limits.max_diag_exec_ops,
+                    spent_exec_ops,
+                    "max_diag_exec_ops",
+                )?,
+                max_text_codes: left(limits.max_text_codes, spent_text_codes, "max_text_codes")?,
+                max_xobject_invocations: left(
+                    limits.max_xobject_invocations,
+                    spent_xobject_invocations,
+                    "max_xobject_invocations",
+                )?,
+                max_show_states: left(
+                    limits.max_show_states,
+                    spent_show_states,
+                    "max_show_states",
+                )?,
+                ..limits.clone()
+            };
+            let mut probe = DiagWalker::new(doc, page, &probe_limits, &validated);
+            probe.redaction_mode = true;
             let mut entries: Vec<(Option<IndirectRef>, Dict, bool)> = Vec::with_capacity(a.len());
             let mut off_rects: Vec<bool> = Vec::with_capacity(a.len());
             for (i, item) in a.iter().enumerate() {
@@ -1509,7 +1637,18 @@ pub(crate) fn regions_edit_session_with<'a>(
                     validated
                         .iter()
                         .any(|v| x0 <= v.urx && x1 >= v.llx && y0 <= v.ury && y1 >= v.lly)
-                });
+                }) || (!off_rect
+                    && match appearance_meets_rects(doc, &d, &r, &mut probe)? {
+                        Probe::Clear => false,
+                        Probe::Meets => true,
+                        // Neither kept nor removed on a guess.
+                        Probe::Unbounded(why) => {
+                            return Err(Error::Unsupported {
+                                feature: "redaction with an unbounded annotation appearance",
+                                detail: format!("/Annots[{i}]: {why}"),
+                            })
+                        }
+                    });
                 let r = match item {
                     Object::Ref(r) => Some(*r),
                     _ => None,
@@ -1517,6 +1656,11 @@ pub(crate) fn regions_edit_session_with<'a>(
                 entries.push((r, d, hit));
                 off_rects.push(off_rect);
             }
+            spent_exec_ops += probe.exec_ops_consumed();
+            spent_text_codes += probe.text_codes_consumed();
+            spent_xobject_invocations += probe.xobject_invocations_consumed();
+            spent_show_states += probe.show_states_len();
+            drop(probe);
             // Second pass: what is removed. A link meeting a rect, and
             // with `remove_annotations`, a markup annotation meeting
             // one — then also what belongs to it on the page: its

@@ -36,7 +36,9 @@ property cannot be decided).
   path segment, shading or pattern painting, link or annotation is
   drawn inside the rects in kasane's reading: the same rects run again
   on the output find nothing to remove. Content a clip or `/BBox`
-  hides inside the rects counts as drawn (a clip hides ink, not data).
+  hides inside the rects counts as drawn (a clip hides ink, not data) —
+  except an axial shading's axis and band, kept whole under a clip away
+  from the rects or as a pattern colour (**N** below).
 - **X** — Where kasane's reading of what is drawn can differ from a
   reader's: unescaped carriage returns in strings, CMap constructions
   Poppler, MuPDF and pdf.js read differently (definition order, code
@@ -44,14 +46,38 @@ property cannot be decided).
   `endcmap`, Identity pass-through, `/WMode` conflicts, odd-length hex
   codes, stray tokens, overlapping codespace lengths), text matrices
   stretched more than 16:1, non-embedded fonts without an embedded
-  substitute, shadings crossing a rect (other than the axial ones below),
+  substitute (in page and form content; in an annotation appearance see
+  below), shadings crossing a rect (other than the axial ones below),
   tiling patterns crossing a rect (other than the rectangles below),
   names an appearance stream does not resolve in its own resources,
-  annotations whose appearance is not placed by `/Rect`, a soft mask set
+  annotations whose appearance is not placed by `/Rect`, an annotation
+  appearance whose content cannot be placed (no `/BBox`, a degenerate
+  one, content that cannot be bounded), a soft mask set
   by `gs` whose group draws anything that meets a rect (its `/BBox`
   included, and what its `/BBox` or a clip hides), paints a shading or
   with a pattern (their data reach past what they paint), or draws
   anything that cannot be bounded.
+- **G** — An annotation meets a rect when its `/Rect` does, or when
+  anything one of its appearance streams draws (normal, down or
+  rollover, every state, as placed by §12.5.5) does — what the
+  appearance's `/BBox` or a clip hides included: it is then removed
+  (links; markup annotations and widgets with `remove_annotations`) or
+  the redaction refused. A glyph of a font without its program in an
+  appearance is bounded by its em square grown by an em on every side,
+  its advance cell and its font descriptor's `/FontBBox`, grown by the
+  stroke for stroked text; clipping text (Tr 4–7) is not bounded so
+  (refused).
+- **G** — A shading (`sh`) under a clip that is a rectangle meeting no
+  rect is kept only when its own geometry — what it would paint
+  unclipped, its `/BBox` being one more clip — meets no rect either: a
+  function-based shading's domain under its `/Matrix`, a radial
+  shading's two circles, a mesh's coordinate range (`/Decode`); else it
+  is handled as a shading crossing a rect. A shading pattern used as a
+  colour (`scn`) is refused where its shading's geometry, placed in
+  pattern space (the default space of the content stream that selects
+  it, and of each form it is inherited into — readers differ — under its
+  `/Matrix`), meets a rect, or when its graphics state
+  sets a soft mask. An axial shading is kept (**N** below).
 - **G** — A soft mask set by `gs` whose group draws nothing that meets a
   rect is kept whole: its group, read under the CTM of the `gs` from the
   initial graphics state, is never edited. Content painted under it is
@@ -67,6 +93,15 @@ property cannot be decided).
 - **N** — Such a shading or pattern keeps its data whole: the function,
   the cell. What the rect showed of them is shown outside too, so the
   data holds nothing only the rect showed; the data itself stays.
+- **N** — An axial shading kept under a clip away from the rects keeps
+  its axis and function whole, whatever colours its band would show
+  inside a rect unclipped (its axis may name points inside a rect).
+- **N** — An axial shading used as a pattern colour keeps its axis and
+  function whole, as above.
+- **N** — A reader regenerates a widget's appearance from its value
+  when it has none, or with `/NeedAppearances true`; that appearance's
+  text may run past `/Rect`. kasane bounds such a widget by its `/Rect`
+  and border, and judges the appearance stream the file holds.
 - **N** — Rendering differences between readers that move no data
   (anti-aliasing at the rect edge, MuPDF's rounding of simple fonts'
   widths).
