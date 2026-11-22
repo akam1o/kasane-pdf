@@ -591,6 +591,14 @@ def main():
     print(f"files: {len({r['id'] for r in results})} evaluated, {len(skipped)} skipped; runs: {len(results)}")
     for k in ("ok", "refused", "unexpected", "incomplete"):
         print(f"  {k:<10} {counts.get(k, 0)}")
+    # Every run is counted once, in exactly one of the four outcomes:
+    # a run counted twice, or in none, makes the tallies above a lie.
+    keys = collections.Counter((r["id"], r["kind"]) for r in results)
+    twice = sorted(k for k, n in keys.items() if n > 1)
+    other = sorted({r["outcome"] for r in results} - {"ok", "refused", "unexpected", "incomplete"})
+    if twice or other or sum(counts.values()) != len(results):
+        print(f"inconsistent tallies: runs counted twice {twice[:5]}, outcomes {other}", file=sys.stderr)
+        sys.exit(2)
     measured = collections.Counter((k, v) for r in results for k, v in (r.get("text_measures") or {}).items())
     print("  text measurements (redacted runs): " + ", ".join(
         f"{k} {st} {n}" for (k, st), n in sorted(measured.items())))
