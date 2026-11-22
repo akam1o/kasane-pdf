@@ -650,3 +650,118 @@ fn stroked_text_of_width_0_is_one_device_pixel_in_the_texture() {
         }
     }
 }
+
+/// A page with pattern /Q (solid black cells, 4 pt) and font /F in its
+/// resources, drawing `content` inside REGION.
+fn hairline_page(content: &str, q_matrix: &str) -> Vec<u8> {
+    build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
+              /Resources << /Pattern << /Q 5 0 R >> \
+              /Font << /F << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>"
+                .to_vec(),
+        ),
+        (
+            4,
+            stream_obj("", format!("q {REGION} W n {content} Q").as_bytes()),
+        ),
+        (
+            5,
+            stream_obj(
+                &format!(
+                    "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 4 4] /XStep 4 /YStep 4 \
+                     /Matrix [{q_matrix}] /Resources << >>"
+                ),
+                b"0 g 0 0 4 4 re f",
+            ),
+        ),
+    ])
+}
+
+#[test]
+fn a_pattern_coloured_line_of_width_0_is_one_device_pixel() {
+    // Lines of width 0 stroked with a pattern colour (all black) are
+    // drawn as the same lines stroked black: one device pixel wide
+    // (before: not drawn at all), also under anisotropic scale.
+    let mut lines = String::new();
+    for k in 0..12 {
+        let v = 14.3 + 14.0 * k as f64;
+        lines.push_str(&format!("{v} 10 m {v} 190 l 10 {v} m 190 {v} l "));
+    }
+    for (cm, dpi) in [
+        ("1 0 0 1 0 0", 96.0),
+        ("1 0 0 1 0 0", 150.0),
+        ("3 0 0 1 0 0", 96.0),
+    ] {
+        let pat = draw(
+            &hairline_page(
+                &format!("{cm} cm 0 w /Pattern CS /Q SCN {lines} S"),
+                "1 0 0 1 0 0",
+            ),
+            dpi,
+        );
+        let solid = draw(
+            &hairline_page(&format!("{cm} cm 0 w 0 G {lines} S"), "1 0 0 1 0 0"),
+            dpi,
+        );
+        let (a, b) = (mean(&pat, dpi), mean(&solid, dpi));
+        assert!(b < 250.0, "{b}");
+        assert!(
+            (a - b).abs() <= 1.0,
+            "[{cm}] {dpi} dpi: pattern {a:.2}, black {b:.2}"
+        );
+    }
+}
+
+#[test]
+fn a_pattern_coloured_glyph_outline_of_width_0_is_drawn_in_the_texture() {
+    // Text stroked with width 0 in a pattern colour inside dense cells:
+    // as the same text stroked black there (before: nothing drawn), to
+    // a few levels (the outline is filled through the pattern's coverage
+    // mask, the black one stroked directly).
+    let make =
+        |colour: &str| {
+            build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
+                  /Resources << /Pattern << /P 5 0 R >> >> >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", format!("/Pattern cs /P scn {REGION} f").as_bytes())),
+            (
+                5,
+                stream_obj(
+                    "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 5 5] /XStep 5 /YStep 5 \
+                     /Resources << /Pattern << /Q 6 0 R >> \
+                     /Font << /F << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>",
+                    format!("BT /F 5 Tf 1 Tr 0 w {colour} 0.5 0.8 Td (H) Tj ET").as_bytes(),
+                ),
+            ),
+            (
+                6,
+                stream_obj(
+                    "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 4 4] /XStep 4 /YStep 4 \
+                     /Resources << >>",
+                    b"0 g 0 0 4 4 re f",
+                ),
+            ),
+        ])
+        };
+    for dpi in [96.0, 150.0] {
+        let (a, b) = (
+            mean(&draw(&make("/Pattern CS /Q SCN"), dpi), dpi),
+            mean(&draw(&make("0 G"), dpi), dpi),
+        );
+        assert!(b < 220.0, "{b}");
+        assert!(
+            (a - b).abs() <= 3.0,
+            "{dpi} dpi: pattern {a:.2}, black {b:.2}"
+        );
+    }
+}

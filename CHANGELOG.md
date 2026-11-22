@@ -31,6 +31,9 @@ versions follow [Semantic Versioning](https://semver.org/).
     refused at `max_pattern_tiles`. Each cell execution, neighbours
     included, still counts against `max_pattern_tiles`; the texture and
     its table count against `max_render_buffer_bytes`.
+- A line or glyph outline of width 0 stroked with a pattern colour is
+  drawn one device pixel wide; it was not drawn at all (the outline of
+  a width-0 stroke is empty).
 
 ### Fixed
 - Text extraction: a `/ToUnicode` CMap that defines a code more than

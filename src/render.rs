@@ -6581,6 +6581,22 @@ impl<'a> Renderer<'a> {
         let Some(pat) = self.gs.stroke_pattern.clone() else {
             return Ok(());
         };
+        if stroke.width == 0.0 {
+            // A line of width 0 is one device pixel wide (§8.4.3.2): its
+            // one-pixel outline in device space, mapped to the target.
+            let Some((device_path, one)) = self.device_hairline(path, stroke, ts)? else {
+                return Ok(());
+            };
+            let Some(outline) = device_path.stroke(&one, 1.0) else {
+                return Ok(());
+            };
+            return self.fill_path_with_pattern(
+                pat,
+                &outline,
+                FillRule::Winding,
+                self.device_to_target,
+            );
+        }
         let stroke = &bounded_stroke(stroke, ts, path, self.pixmap.width(), self.pixmap.height())?;
         let scale = (ts.sx * ts.sy - ts.kx * ts.ky).abs().sqrt().max(0.01);
         let Some(outline) = path.stroke(stroke, scale) else {
@@ -6834,6 +6850,28 @@ impl<'a> Renderer<'a> {
         stroke: &Stroke,
         ts: Transform,
     ) -> Result<(), Error> {
+        if let Some((device_path, one)) = self.device_hairline(path, stroke, ts)? {
+            self.pixmap.stroke_path(
+                &device_path,
+                paint,
+                &one,
+                self.device_to_target,
+                self.gs.clip_mask(),
+            );
+        }
+        Ok(())
+    }
+
+    /// The path of a line of width 0 in device pixels (dashed, within
+    /// the dash budget) and the one-pixel stroke that draws it there,
+    /// for `stroke_device_hairline` and pattern-coloured hairlines; `None`
+    /// when nothing is drawn.
+    fn device_hairline(
+        &mut self,
+        path: &tiny_skia::Path,
+        stroke: &Stroke,
+        ts: Transform,
+    ) -> Result<Option<(tiny_skia::Path, Stroke)>, Error> {
         let dash = self.gs.dash.as_ref().map_or(&[][..], |d| &d.0);
         // Charged as the outline the rasteriser gets: one device pixel is
         // up to `stretch(device_to_target).1` pixels of the target, which
@@ -6841,7 +6879,7 @@ impl<'a> Renderer<'a> {
         let (_, target_px) = stretch(self.device_to_target);
         let (ts_min, _) = stretch(ts);
         if !(ts_min > 0.0 && target_px.is_finite()) {
-            return Ok(());
+            return Ok(None);
         }
         let charged = Stroke {
             width: (target_px / ts_min) as f32,
@@ -6868,14 +6906,14 @@ impl<'a> Renderer<'a> {
             false,
         )? {
             DashedStroke::Undashed => path.clone(),
-            DashedStroke::Nothing => return Ok(()),
+            DashedStroke::Nothing => return Ok(None),
             DashedStroke::Segments(p, _) => p,
         };
         let Some(to_device) = self.device_to_target.invert() else {
-            return Ok(());
+            return Ok(None);
         };
         let Some(device_path) = path.transform(ts.post_concat(to_device)) else {
-            return Ok(());
+            return Ok(None);
         };
         // As thin as the device draws: no miter spikes at corners, which
         // a line of width 0 does not have (bevel joins add nothing past a
@@ -6886,14 +6924,7 @@ impl<'a> Renderer<'a> {
             line_join: tiny_skia::LineJoin::Bevel,
             ..stroke.clone()
         };
-        self.pixmap.stroke_path(
-            &device_path,
-            paint,
-            &one,
-            self.device_to_target,
-            self.gs.clip_mask(),
-        );
-        Ok(())
+        Ok(Some((device_path, one)))
     }
 
     /// Fresh graphics state for one cell: `ctm` as the CTM, the outer
