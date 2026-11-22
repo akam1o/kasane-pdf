@@ -130,6 +130,30 @@ are on the [roadmap](architecture.md#roadmap).
   release on the costliest path (soft masks), so it fits a 2 MiB thread.
   A caller raising the limit needs ≈ 25 KiB (debug) / 5 KiB (release)
   more stack per level. Tiling patterns nest at most 8 levels (fixed).
+- **Tiling patterns**: a fill with at most 64 tiles executes the cell
+  once per tile, each clipped to its `/BBox` with anti-aliased edges,
+  so content reaching a tile's edge shows faint seams there (as in
+  MuPDF). Denser fills use the periodic texture (CHANGELOG, Unreleased):
+  inside it stroke adjustment (`/SA`) is not applied, and a line or
+  glyph outline stroked with width 0 is one device pixel wide with bevel
+  joins — on a diagonal a little more ink than the page's anti-aliased
+  hairline, which covers about 0.7 of a pixel there; under a rotated or
+  skewed pattern matrix each device pixel is averaged in 2 × 2 parts
+  over their bounding boxes (the mean coverage is kept; edge pixels can
+  differ by some levels from the exact footprint). Overlapping cells
+  under a blend mode other than Normal are painted tile by tile, as are
+  fills of 64 tiles or fewer. `/TilingType` 1 (constant spacing) is not
+  honoured: ISO 32000 asks for its cells to be a whole number of device
+  pixels apart, distorting the cell slightly; kasane places every
+  pattern's cells at their exact spacing, as for `/TilingType` 2 (as
+  MuPDF does). Poppler draws such a pattern whose `/BBox` equals its step
+  from a tile of whole pixels, so its cells can drift from ours by a
+  fraction of a pixel per step. (Whole-pixel spacing was tried and moved
+  the cells by up to several pixels from MuPDF and from their exact
+  position across a fill; not adopted.) A cell whose texture
+  would exceed 2^21 pixels (a cell over about 1,400 device pixels
+  across, with more than 64 tiles) is executed tile by tile, against
+  `max_pattern_tiles`.
 - **Clip and soft masks** (since 0.5.1): each is one byte per page
   pixel. Saved states share them and a clip that cuts nothing keeps the
   current one, so only distinct nested clips add masks; those alive at

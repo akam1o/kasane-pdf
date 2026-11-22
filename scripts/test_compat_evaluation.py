@@ -299,6 +299,184 @@ Q1_AFTER = [0.9321, 0.9322, 0.9336, 0.9328, 0.9326, 0.9315, 0.9340, 0.9330, 0.93
 OPEN = (0.02, 3.0)  # outside both witnesses' tolerance
 
 
+class ReviewedDifferences(unittest.TestCase):
+    """A reviewed difference accepts its one measure on its one page, up
+    to the reviewed value, for its input and environment — nothing else."""
+
+    SHA = "5" * 64
+
+    def entries(self, **over):
+        env = {k: ENV[k] for k in cr.compat_env.COMPARED}
+        mad = {"id": "a", "sha256": self.SHA, "page": 1, "metric": "mad_kp", "measure": "r300 mad",
+               "env": env, "baseline": 3.0, "reviewed": 3.6, "reason": "reviewed", "review": "PR #0"}
+        cs = dict(mad, metric="cssim", baseline=0.9, reviewed=0.85)
+        return [dict(mad, **over), dict(cs, **over)]
+
+    def file(self, cssim=0.9, ssim=0.9, sha=SHA, pg2=False):
+        f = file("a", [page(1, ssim, cssim)] + ([page(2, 0.9)] if pg2 else []))
+        if sha is not None:
+            f["sha256"] = sha
+        return f
+
+    def att(self, kp=(0.02, 3.0), km=(0.02, 3.0), ag="neither", pg2=None):
+        rows = [("a", 1, ag, *kp)] + ([("a", 2, "neither", *pg2)] if pg2 else [])
+        a = att(*rows)
+        if ag == "neither":
+            a["pages"][0]["r300"].update(dpx_km=km[0], mad_km=km[1])
+        return a
+
+    def go(self, f, a, entries=None, base_f=None, base_a=None, env=ENV):
+        b = cr.summarize(run(base_f or self.file(pg2="pages" in str(base_f))), base_a or self.att(), ENV)
+        return check(run(f), b, env=env, attribution=a, require_same_env=True,
+                     reviewed_differences=self.entries() if entries is None else entries)
+
+    def test_the_reviewed_change_is_accepted_and_still_reported(self):
+        rc, out = self.go(self.file(cssim=0.85), self.att(kp=(0.02, 3.6)))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.count("regression under the original rule, ACCEPTED (reviewed, limited)"), 2, out)
+        self.assertIn("a: open page 1 differs more from Poppler (mad_kp 3.0 -> 3.6)", out)
+        self.assertIn("a: page 1 content SSIM 0.9 -> 0.85", out)
+        self.assertIn("2 regression(s) under the original rule accepted", out)
+        self.assertNotIn("REGRESSION:", out)
+
+    def test_anything_past_or_beside_it_is_a_regression(self):
+        cases = [
+            ("past the reviewed value", self.file(), self.att(kp=(0.02, 3.61)), None, "mad_kp 3.0 -> 3.61"),
+            ("past the reviewed value", self.file(cssim=0.849), self.att(), None, "content SSIM 0.9 -> 0.849"),
+            # The other witness and the other measure stay gated.
+            (None, self.file(), self.att(kp=(0.02, 3.6), km=(0.02, 3.6)), None, "differs more from MuPDF"),
+            (None, self.file(), self.att(kp=(0.03, 3.6)), None, "differs more from Poppler (dpx_kp 0.02 -> 0.03)"),
+            (None, self.file(ssim=0.85, cssim=0.85), self.att(), None, "page 1 SSIM 0.9 -> 0.85"),
+            # Another input, an input of unknown identity, another environment, missing evidence.
+            ("another input", self.file(sha="6" * 64), self.att(kp=(0.02, 3.6)), None, "mad_kp 3.0 -> 3.6"),
+            ("the input's SHA-256 is not in the run", self.file(sha=None), self.att(kp=(0.02, 3.6)), None, "mad_kp"),
+            ("another environment", self.file(), self.att(kp=(0.02, 3.6)),
+             self.entries(env=dict({k: ENV[k] for k in cr.compat_env.COMPARED}, mupdf="1.28.0")), "mad_kp"),
+            ("evidence missing: reason", self.file(), self.att(kp=(0.02, 3.6)), self.entries(reason=""), "mad_kp"),
+            ("evidence missing: env", self.file(), self.att(kp=(0.02, 3.6)), self.entries(env={}), "mad_kp"),
+            # Another baseline value: the entry was reviewed against another baseline.
+            ("another baseline value", self.file(), self.att(kp=(0.02, 3.6)), self.entries(baseline=2.9),
+             "mad_kp 3.0 -> 3.6"),
+            # Not comparable any more: never accepted.
+            (None, self.file(), self.att(ag="not_comparable", kp=(0, 0)), None, "agreement neither -> not_comparable"),
+        ]
+        for why, f, a, entries, want in cases:
+            rc, out = self.go(f, a, entries)
+            self.assertEqual(rc, 1, (want, out))
+            self.assertIn("REGRESSION:", out)
+            self.assertIn(want, out)
+            if why:
+                self.assertIn("reviewed difference not applied (" + why, out)
+            self.assertTrue(any(want in l for l in out.splitlines() if l.startswith("REGRESSION:")), (want, out))
+            # Only a reviewed measure within its range may be accepted beside it.
+            for line in out.splitlines():
+                if "ACCEPTED" in line:
+                    self.assertTrue("from Poppler (mad_kp 3.0 -> 3.6)" in line
+                                    or "content SSIM 0.9 -> 0.85" in line, line)
+
+    def test_another_page_or_environment_of_the_run_is_not_covered(self):
+        b = cr.summarize(run(self.file(pg2=True)), self.att(pg2=(0.02, 3.0)), ENV)
+        rc, out = check(run(self.file(pg2=True)), b, env=ENV, attribution=self.att(pg2=(0.02, 3.6)),
+                        require_same_env=True, reviewed_differences=self.entries())
+        self.assertEqual(rc, 1, out)
+        self.assertIn("REGRESSION: a: open page 2 differs more from Poppler", out)
+        # The run measured elsewhere: nothing is compared, nothing accepted.
+        other = dict(ENV, poppler="26.10.0")
+        rc, out = self.go(self.file(cssim=0.85), self.att(kp=(0.02, 3.6)), env=other)
+        self.assertEqual(rc, 1, out)
+        self.assertNotIn("ACCEPTED", out)
+
+    def test_blank_or_incomplete_evidence_never_applies(self):
+        env = {k: ENV[k] for k in cr.compat_env.COMPARED}
+        for over, why in [
+            ({"reason": "   "}, "evidence missing: reason"),
+            ({"review": "\t"}, "evidence missing: review"),
+            ({"sha256": "x" * 64}, "sha256 is not a SHA-256"),
+            ({"env": {k: v for k, v in env.items() if k != "mupdf"}}, "evidence missing: env mupdf"),
+            ({"env": dict(env, os=" ")}, "evidence missing: env os"),
+            ({"env": dict(env, reference={k: v for k, v in E0.items() if k != "fonts_sha256"})},
+             "evidence missing: env reference.fonts_sha256"),
+            ({"baseline": float("nan")}, "evidence missing: baseline"),
+            ({"reason": []}, "evidence missing: reason"),
+            ({"reason": float("nan")}, "evidence missing: reason"),
+            ({"measure": 3}, "evidence missing: measure"),
+            ({"page": True}, "evidence missing: page"),
+            ({"env": dict(env, reference=dict(E0, fontconfig="   "))}, "evidence missing: env reference.fontconfig"),
+            ({"env": dict(env, reference=dict(E0, font_files=float("nan")))},
+             "evidence missing: env reference.font_files"),
+            ({"metric": "ssim"}, None),  # not an entry for this measure: nothing applies
+        ]:
+            rc, out = self.go(self.file(), self.att(kp=(0.02, 3.6)), self.entries(**over))
+            self.assertEqual(rc, 1, (over, out))
+            self.assertNotIn("ACCEPTED", out)
+            if why:
+                self.assertIn(why, out)
+
+    def test_a_baseline_update_still_needs_the_regression_accepted(self):
+        found = []
+        b = cr.summarize(run(self.file()), self.att(), ENV)
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = cr.check(run(self.file(cssim=0.85)), b, env=ENV, attribution=self.att(kp=(0.02, 3.6)),
+                          require_same_env=True, collect=found, reviewed_differences=self.entries())
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(found), ["a: open page 1 differs more from Poppler (mad_kp 3.0 -> 3.6)",
+                                         "a: page 1 content SSIM 0.9 -> 0.85"])
+        with tempfile.TemporaryDirectory() as d:
+            def w(n, o):
+                with open(os.path.join(d, n), "w") as fh:
+                    json.dump(o, fh)
+                return os.path.join(d, n)
+            bp, envp = w("base.json", b), w("env.json", ENV)
+            r, a = w("run.json", run(self.file(cssim=0.85))), w("att.json", self.att(kp=(0.02, 3.6)))
+            saved = cr.load_reviewed
+            cr.load_reviewed = self.entries
+            try:
+                rc, out = main_cli("update-baseline", r, bp, "--env", envp, "--attribution", a, "--write")
+                self.assertEqual(rc, 1, out)
+                self.assertIn("regressions against the current baseline (2;", out)
+                with open(bp) as fh:
+                    self.assertEqual(json.load(fh), b)
+                rc, out = main_cli("update-baseline", r, bp, "--env", envp, "--attribution", a, "--write",
+                                   "--accept-regressions")
+                self.assertEqual(rc, 0, out)
+                # The updated baseline is the new origin: the entry's baseline
+                # value is stale, and a further drop is a regression.
+                rc, out = check(run(self.file(cssim=0.84)), json.load(open(bp)), env=ENV,
+                                attribution=self.att(kp=(0.02, 4.2)), require_same_env=True,
+                                reviewed_differences=self.entries())
+                self.assertEqual(rc, 1, out)
+                self.assertIn("another baseline value", out)
+            finally:
+                cr.load_reviewed = saved
+
+    def test_the_ledger_records_the_acceptance(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "ledger.json")
+            b = cr.summarize(run(self.file()), self.att(), ENV)
+            rc, out = check(run(self.file()), b, env=ENV, attribution=self.att(kp=(0.02, 3.6)),
+                            require_same_env=True, ledger_path=p, reviewed_differences=self.entries())
+            self.assertEqual(rc, 0, out)
+            with open(p) as fh:
+                led = json.load(fh)
+            (e,) = [e for e in led if e["id"] == "a" and e["page"] == 1]
+            self.assertEqual(len(e["decisions"]), 1, e)
+            self.assertTrue(e["decisions"][0].startswith("ACCEPTED (reviewed, limited): a: open page 1 differs "
+                                                         "more from Poppler (mad_kp 3.0 -> 3.6)"), e)
+
+    def test_the_committed_differences_are_complete(self):
+        entries = cr.load_reviewed()
+        self.assertEqual(len(entries), 2)
+        for e in entries:
+            self.assertEqual([k for k in cr.REVIEWED_FIELDS if e.get(k) in (None, "", {})], [], e["id"])
+            self.assertIn(e["metric"], cr.REVIEWED_METRICS)
+            self.assertEqual(sorted(e["env"]), sorted(cr.compat_env.COMPARED))
+            self.assertRegex(e["sha256"], "^[0-9a-f]{64}$")
+            # A reviewed range is a worsening, bounded on both ends.
+            worse = e["reviewed"] > e["baseline"] if cr.REVIEWED_METRICS[e["metric"]] == "max" \
+                else e["reviewed"] < e["baseline"]
+            self.assertTrue(worse, e["id"])
+
+
 def worst(ssims, cap):
     return sorted(range(1, len(ssims) + 1), key=lambda pg: (ssims[pg - 1], pg))[:cap]
 

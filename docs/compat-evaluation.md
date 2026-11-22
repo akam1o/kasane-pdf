@@ -226,6 +226,36 @@ records none"* — a note for `fixtures-smoke.json` and `release-verify`,
 a regression with `--require-same-env`, so the nightly cannot pass
 against an unarmed baseline.
 
+### Reviewed differences
+
+`compat/reviewed-differences.json` lists a few changes of **one
+measure on one page** (an open page's `mad_kp` / `mad_km` / `dpx_kp` /
+`dpx_km`, or a page's content SSIM) that were investigated and accepted
+in a review. Each entry records the case id, the input's SHA-256, the
+page, the measure and how it is taken, the environment it was reviewed
+in (OS, architecture, Poppler, MuPDF, features, reference fingerprint),
+the baseline value, the reviewed value, the reason and the review.
+
+`check` still finds the regression under the original rule and prints
+it as `regression under the original rule, ACCEPTED (reviewed,
+limited)` — it is not a regression only when all of these hold:
+the run's file has the entry's SHA-256, the run's environment equals
+the entry's, the baseline value equals the entry's, and the new value
+is not past the reviewed one (a `mad` / `dpx` at most it, a content SSIM
+at least it). Otherwise it stays a `REGRESSION`, with a note why the
+entry did not apply (another input, an input of unknown identity,
+another environment, another baseline value, past the reviewed value,
+evidence missing). Every other measure of the page — the other witness,
+`dpx` beside `mad`, page SSIM, the agreement, a page that becomes
+`not_comparable` — and every other page stay gated. An entry with
+evidence missing or blank (any field, an environment field of either
+side, a SHA-256 that is not one) never applies. The ledger (`--ledger`)
+records the acceptance beside the page's other decisions. The baseline
+itself is not changed: `update-baseline` still counts an accepted
+difference as a regression (`--accept-regressions` after review), and a
+baseline measured again makes an entry's baseline value stale, so the
+entry no longer applies.
+
 ## 4. Baselines
 
 Baselines change only by a person, with a commit:
