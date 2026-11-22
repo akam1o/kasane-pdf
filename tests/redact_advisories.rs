@@ -14,7 +14,7 @@ mod common;
 
 use common::{build_pdf, stream_obj};
 use kasane_pdf::{
-    diagnose_redaction, extract_text, redact, render_page, Document, Limits, RedactOptions,
+    diagnose_redaction, extract_text, redact, render_page, Document, Error, Limits, RedactOptions,
     RenderOptions, TextOptions,
 };
 
@@ -1467,4 +1467,467 @@ fn ghsa_4q38_refusals_do_not_quote_the_document() {
             &pdf,
         );
     }
+}
+
+// ---- GHSA-pp5g-3qw2-h45w: annotation appearances beyond their box -----
+
+/// Whether `pdf`'s page, its annotations' appearances included, shows
+/// `marker` to kasane's extractor.
+fn annotation_text(pdf: &[u8]) -> String {
+    let doc = Document::from_bytes(pdf).unwrap();
+    let mut opts = TextOptions::default();
+    opts.include_annotations = true;
+    let t = extract_text(&doc, &doc.pages()[0], &opts).unwrap();
+    let mut s: String = t.chars.iter().filter_map(|c| c.unicode.clone()).collect();
+    for a in t.annotations {
+        s.extend(a.appearance.iter().filter_map(|c| c.unicode.clone()));
+    }
+    s
+}
+
+/// An annotation whose `/Rect` does not meet the rect, its appearance
+/// placing text inside the rect beyond its `/BBox` (hidden by that clip,
+/// extracted by readers that ignore it): the annotation counts as meeting
+/// the rect — removed (a link; with `remove_annotations`, a markup
+/// annotation or a widget) or the redaction refused — never kept with the
+/// text.
+#[test]
+fn ghsa_pp5g_annotation_appearances_beyond_their_box() {
+    // The appearance's /BBox is 0 0 60 20, placed at /Rect 150 150 210
+    // 170; its text is 100 units below, at about 80 50 — then inside the
+    // rect 60 60 140 140 with the second line.
+    let text = "BT /F1 10 Tf 2 5 Td (BOXWORD) Tj 0 -95 Td (OVERSECRET) Tj ET";
+    let form = |extra: &str, body: &str| {
+        stream_obj(
+            &format!(
+                "/Type /XObject /Subtype /Form /BBox [0 0 60 20] {extra} \
+                 /Resources << /Font << /F1 20 0 R >> /XObject << /Fx 32 0 R >> >>"
+            ),
+            body.as_bytes(),
+        )
+    };
+    let nested = stream_obj(
+        "/Type /XObject /Subtype /Form /BBox [0 0 60 20] /Resources << /Font << /F1 20 0 R >> >>",
+        text.as_bytes(),
+    );
+    let cases: Vec<(&str, String, Vec<u8>)> = vec![
+        (
+            "widget",
+            "/Subtype /Widget /FT /Tx /T (f) /Rect [70 150 130 170] /AP << /N 31 0 R >>".into(),
+            form("", text),
+        ),
+        (
+            "square",
+            "/Subtype /Square /Rect [70 150 130 170] /AP << /N 31 0 R >>".into(),
+            form("", text),
+        ),
+        (
+            "link",
+            "/Subtype /Link /Rect [70 150 130 170] /AP << /N 31 0 R >>".into(),
+            form("", text),
+        ),
+        (
+            "down-appearance",
+            "/Subtype /Square /Rect [70 150 130 170] /AP << /N 33 0 R /D 31 0 R >>".into(),
+            form("", text),
+        ),
+        (
+            "nested-form",
+            "/Subtype /Square /Rect [70 150 130 170] /AP << /N 31 0 R >>".into(),
+            form("", "/Fx Do"),
+        ),
+        (
+            "matrix",
+            // A quarter turn: /BBox under /Matrix is 20 x 60, fitted to the
+            // 60 x 20 /Rect (x 3, y 1/3); text at -150 10 lands at 100 100.
+            "/Subtype /Square /Rect [70 150 130 170] /AP << /N 31 0 R >>".into(),
+            form(
+                "/Matrix [0 1 -1 0 0 0]",
+                "BT /F1 10 Tf 2 5 Td (BOXWORD) Tj -152 5 Td (OVERSECRET) Tj ET",
+            ),
+        ),
+    ];
+    for (name, annot, ap) in cases {
+        let objs = vec![
+            (30, format!("<< /Type /Annot {annot} /F 4 >>").into_bytes()),
+            (31, ap),
+            (32, nested.clone()),
+            (33, form("", "BT /F1 10 Tf 2 5 Td (BOXWORD) Tj ET")),
+        ];
+        let cat = if name == "widget" {
+            "/AcroForm << /Fields [30 0 R] >>"
+        } else {
+            ""
+        };
+        let pdf = page(KEPT.as_bytes(), "", cat, "/Annots [30 0 R]", objs);
+        // A down appearance is not the one extracted; its bytes are.
+        assert!(
+            name == "down-appearance" || annotation_text(&pdf).contains("OVERSECRET"),
+            "{name}: the input shows it"
+        );
+        for annotations in [false, true] {
+            let opts = RedactOptions::new().remove_annotations(annotations);
+            if let Ok(r) = run(&pdf, &opts) {
+                let t = annotation_text(&r.output);
+                assert!(!t.contains("OVERSECRET"), "{name} ({annotations}): kept");
+                assert!(
+                    !holds(&r.output, b"OVERSECRET"),
+                    "{name} ({annotations}): kept"
+                );
+                assert!(
+                    t.contains("PUBLICWORD"),
+                    "{name} ({annotations}): public text lost"
+                );
+            }
+        }
+        dump(
+            &format!("pp5g-{name}"),
+            "GHSA-pp5g-3qw2-h45w",
+            &format!("{REDACT_ARGS} --remove-annotations"),
+            "safe-text:OVERSECRET",
+            &pdf,
+        );
+    }
+    // An appearance that draws only inside its box, away from the rect:
+    // the annotation and the page are kept as they were.
+    let pdf = page(
+        format!("{KEPT} BT /F1 10 Tf 80 100 Td (SECRETTEXT) Tj ET").as_bytes(),
+        "",
+        "",
+        "/Annots [30 0 R]",
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Square /Rect [70 150 130 170] /F 4 /AP << /N 31 0 R >> >>"
+                    .to_vec(),
+            ),
+            (31, form("", "BT /F1 10 Tf 2 5 Td (BOXWORD) Tj ET")),
+        ],
+    );
+    let r = run(&pdf, &RedactOptions::new()).unwrap();
+    // Appearances away from the rect drawn with fonts that have no
+    // program (a check box's ZapfDingbats, Helvetica): bounded around
+    // their glyphs — kept, never refused or removed for it.
+    for (annot, ap) in [
+        (
+            "/Subtype /Widget /FT /Btn /T (c) /V /Yes /AS /Yes /Rect [160 160 180 180] \
+             /AP << /N << /Yes 31 0 R /Off 32 0 R >> >>",
+            "BT /ZaDb 12 Tf 2 4 Td (4) Tj ET",
+        ),
+        (
+            "/Subtype /Square /Rect [150 150 210 170] /AP << /N 31 0 R >>",
+            "BT /Helv 10 Tf 2 5 Td (BOXWORD) Tj ET",
+        ),
+    ] {
+        let fonts = "/Font << /ZaDb << /Type /Font /Subtype /Type1 /BaseFont /ZapfDingbats >> \
+                     /Helv << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >>";
+        let far = page(
+            format!("{KEPT} BT /F1 10 Tf 80 100 Td (SECRETTEXT) Tj ET").as_bytes(),
+            "",
+            if annot.contains("Widget") { "/AcroForm << /Fields [30 0 R] >>" } else { "" },
+            "/Annots [30 0 R]",
+            vec![
+                (30, format!("<< /Type /Annot {annot} /F 4 >>").into_bytes()),
+                (
+                    31,
+                    stream_obj(
+                        &format!("/Type /XObject /Subtype /Form /BBox [0 0 20 20] /Resources << {fonts} >>"),
+                        ap.as_bytes(),
+                    ),
+                ),
+                (32, stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 20 20]", b"")),
+            ],
+        );
+        for annotations in [false, true] {
+            let opts = RedactOptions::new().remove_annotations(annotations);
+            let r = run(&far, &opts).unwrap_or_else(|e| panic!("{annot}: {e}"));
+            assert_eq!(r.annotations_removed, 0, "{annot}");
+            assert!(!annotation_text(&r.output).contains("SECRETTEXT"));
+        }
+    }
+    // Such a glyph that can reach the rect all the same — stroked wide
+    // (Tr 1), clipping (Tr 7), or with a font descriptor whose /FontBBox
+    // reaches it — is not bounded by the em: removed or refused.
+    for (desc, ap) in [
+        ("", "BT /Helv 10 Tf 1 Tr 200 w 2 5 Td (A) Tj ET"),
+        ("", "BT /Helv 10 Tf 7 Tr 2 5 Td (A) Tj ET 0 0 1 1 re f"),
+        (
+            "/FontDescriptor << /Type /FontDescriptor /FontName /Wide /Flags 32 \
+             /FontBBox [-9000 -9000 9000 9000] /ItalicAngle 0 /Ascent 900 /Descent -200 \
+             /CapHeight 700 /StemV 80 >>",
+            "BT /Helv 10 Tf 2 5 Td (A) Tj ET",
+        ),
+    ] {
+        let font = format!(
+            "/Font << /Helv << /Type /Font /Subtype /Type1 /BaseFont /Wide /FirstChar 65 \
+             /LastChar 65 /Widths [600] {desc} >> >>"
+        );
+        let near = page(
+            KEPT.as_bytes(),
+            "",
+            "",
+            "/Annots [30 0 R]",
+            vec![
+                (
+                    30,
+                    b"<< /Type /Annot /Subtype /Square /Rect [70 145 90 155] /F 4 /AP << /N 31 0 R >> >>"
+                        .to_vec(),
+                ),
+                (
+                    31,
+                    stream_obj(
+                        &format!("/Type /XObject /Subtype /Form /BBox [0 0 20 10] /Resources << {font} >>"),
+                        ap.as_bytes(),
+                    ),
+                ),
+            ],
+        );
+        for annotations in [false, true] {
+            let opts = RedactOptions::new().remove_annotations(annotations);
+            if let Ok(r) = run(&near, &opts) {
+                assert_eq!(r.annotations_removed, 1, "{ap} {desc}: kept");
+            }
+        }
+    }
+    let t = annotation_text(&r.output);
+    assert!(
+        !t.contains("SECRETTEXT") && t.contains("BOXWORD") && t.contains("PUBLICWORD"),
+        "{t}"
+    );
+}
+
+// ---- GHSA-844w-wgrm-c4q8: shading geometry under a clip away ----------
+
+/// A shading painted under a clip that keeps it from the rect, its own
+/// geometry inside the rect (mesh vertices, a radial shading's circles, a
+/// function-based shading's domain): removed with what draws it, or the
+/// redaction refused — never kept as it was. An axial shading whose axis
+/// lies away from the rect is still kept.
+#[test]
+fn ghsa_844w_shading_geometry_under_a_clip_away() {
+    // Three vertices inside the rect, coordinates 16-bit: 0x5a5a... marks.
+    let mesh_data: Vec<u8> = [(0x5a51u16, 0x5a52u16), (0x5a53, 0x5a54), (0x5a55, 0x5a56)]
+        .iter()
+        .flat_map(|&(x, y)| {
+            let mut v = vec![0u8];
+            v.extend_from_slice(&x.to_be_bytes());
+            v.extend_from_slice(&y.to_be_bytes());
+            v.push(0x80);
+            v
+        })
+        .collect();
+    // Decode maps 0x5a51.. to about 70..90 (inside 60..140).
+    let mesh = stream_obj(
+        "/ShadingType 4 /ColorSpace /DeviceGray /BitsPerCoordinate 16 /BitsPerComponent 8 \
+         /BitsPerFlag 8 /Decode [-1800 200 -1800 200 0 1]",
+        &mesh_data,
+    );
+    let marker = "5a515a52";
+    let radial = b"<< /ShadingType 3 /ColorSpace /DeviceGray /Coords [100 100 5 100 100 30] \
+                   /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>"
+        .to_vec();
+    let function = b"<< /ShadingType 1 /ColorSpace /DeviceGray /Domain [0 1 0 1] \
+                     /Matrix [40 0 0 40 80 80] /Function << /FunctionType 2 /Domain [0 1] \
+                     /C0 [0] /C1 [1] /N 1 >> >>"
+        .to_vec();
+    for (name, sh) in [
+        ("mesh", mesh.clone()),
+        ("radial", radial),
+        ("function", function),
+    ] {
+        let pdf = page(
+            format!("q 0 0 20 20 re W n /Sh sh Q {KEPT}").as_bytes(),
+            "/Shading << /Sh 30 0 R >>",
+            "",
+            "",
+            vec![(30, sh)],
+        );
+        match run(&pdf, &RedactOptions::new()) {
+            Ok(r) => panic!("{name}: kept ({} bytes)", r.output.len()),
+            Err(Error::Unsupported { detail, .. }) => {
+                assert!(detail.contains("shading"), "{detail}")
+            }
+            Err(e) => panic!("{name}: {e}"),
+        }
+        if name == "mesh" {
+            dump(
+                "844w-mesh",
+                "GHSA-844w-wgrm-c4q8",
+                REDACT_ARGS,
+                &format!("safe-bytes:hex:{marker}"),
+                &pdf,
+            );
+        }
+    }
+    // The geometry inside the rect behind the shading's own /BBox (one
+    // more clip): refused all the same.
+    let sampled = stream_obj(
+        "/FunctionType 0 /Domain [0 1 0 1] /Range [0 1] /Size [2 2] /BitsPerSample 8",
+        &[0x5b, 0x5c, 0x5d, 0x5e],
+    );
+    for (name, sh, extra) in [
+        (
+            "mesh-bbox",
+            {
+                let mut v = mesh.clone();
+                let i = v.windows(13).position(|w| w == b"/ShadingType ").unwrap();
+                v.splice(i..i, b"/BBox [0 0 20 20] ".iter().copied());
+                v
+            },
+            vec![],
+        ),
+        (
+            "function-bbox",
+            b"<< /ShadingType 1 /ColorSpace /DeviceGray /BBox [0 0 20 20] /Domain [0 1 0 1] \
+              /Matrix [40 0 0 40 80 80] /Function 31 0 R >>"
+                .to_vec(),
+            vec![(31, sampled.clone())],
+        ),
+    ] {
+        let mut objs = vec![(30, sh)];
+        objs.extend(extra);
+        let clip = "0 0 20 20";
+        let pdf = page(
+            format!("q {clip} re W n /Sh sh Q {KEPT}").as_bytes(),
+            "/Shading << /Sh 30 0 R >>",
+            "",
+            "",
+            objs,
+        );
+        match run(&pdf, &RedactOptions::new()) {
+            Ok(r) => panic!("{name}: kept ({} bytes)", r.output.len()),
+            Err(Error::Unsupported { detail, .. }) => {
+                assert!(
+                    detail.contains("shading") || detail.contains("Sh"),
+                    "{name}: {detail}"
+                )
+            }
+            Err(e) => panic!("{name}: {e}"),
+        }
+    }
+    // A shading pattern used as a colour away from the rect, its mesh
+    // vertices or sampled function inside it: refused.
+    for (name, sh, extra) in [
+        ("mesh-pattern", mesh.clone(), vec![]),
+        (
+            "function-pattern",
+            b"<< /ShadingType 1 /ColorSpace /DeviceGray /Domain [0 1 0 1] \
+              /Matrix [40 0 0 40 80 80] /Function 31 0 R >>"
+                .to_vec(),
+            vec![(31, sampled.clone())],
+        ),
+    ] {
+        let mut objs = vec![
+            (30, sh),
+            (32, b"<< /PatternType 2 /Shading 30 0 R >>".to_vec()),
+        ];
+        objs.extend(extra);
+        let pdf = page(
+            format!("/Pattern cs /P0 scn 0 0 20 20 re f {KEPT}").as_bytes(),
+            "/Pattern << /P0 32 0 R >>",
+            "",
+            "",
+            objs,
+        );
+        assert!(run(&pdf, &RedactOptions::new()).is_err(), "{name}: kept");
+    }
+    // The same through a pattern that has its own graphics state.
+    let pdf = page(
+        format!("/Pattern cs /P0 scn 0 0 20 20 re f {KEPT}").as_bytes(),
+        "/Pattern << /P0 32 0 R >>",
+        "",
+        "",
+        vec![
+            (
+                30,
+                b"<< /ShadingType 1 /ColorSpace /DeviceGray /Domain [0 1 0 1] \
+                  /Matrix [40 0 0 40 80 80] /Function << /FunctionType 2 /Domain [0 1] \
+                  /C0 [0] /C1 [1] /N 1 >> >>"
+                    .to_vec(),
+            ),
+            (
+                32,
+                b"<< /PatternType 2 /ExtGState << /CA 1 >> /Shading 30 0 R >>".to_vec(),
+            ),
+        ],
+    );
+    assert!(
+        run(&pdf, &RedactOptions::new()).is_err(),
+        "pattern with ExtGState: kept"
+    );
+    // Selected on the page, filled in a form placed at 80 80: placed in
+    // the form's space (as Poppler does), its circles are in the rect.
+    let pdf = page(
+        format!("/Pattern cs /P0 scn /Fx Do {KEPT}").as_bytes(),
+        "/Pattern << /P0 32 0 R >> /XObject << /Fx 33 0 R >>",
+        "",
+        "",
+        vec![
+            (
+                32,
+                b"<< /PatternType 2 /Shading << /ShadingType 3 /ColorSpace /DeviceGray \
+                  /Coords [0 0 0 0 0 8] /Function << /FunctionType 2 /Domain [0 1] \
+                  /C0 [0] /C1 [1] /N 1 >> >> >>"
+                    .to_vec(),
+            ),
+            (
+                33,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [-80 -80 120 120] /Matrix [1 0 0 1 80 80]",
+                    b"-80 -80 20 20 re f",
+                ),
+            ),
+        ],
+    );
+    assert!(
+        run(&pdf, &RedactOptions::new()).is_err(),
+        "inherited pattern: kept"
+    );
+    // A radial pattern drawn by an annotation's appearance away from the
+    // rect, placed in the appearance's space: kept, the page redacted.
+    let pdf = page(
+        format!("{KEPT} BT /F1 10 Tf 80 100 Td (SECRETTEXT) Tj ET").as_bytes(),
+        "",
+        "",
+        "/Annots [40 0 R]",
+        vec![
+            (
+                40,
+                b"<< /Type /Annot /Subtype /Square /Rect [150 150 190 190] /F 4 /AP << /N 41 0 R >> >>"
+                    .to_vec(),
+            ),
+            (
+                41,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 40 40] /Resources << /Pattern << /R 42 0 R >> >>",
+                    b"/Pattern cs /R scn 0 0 40 40 re f",
+                ),
+            ),
+            (
+                42,
+                b"<< /PatternType 2 /Shading << /ShadingType 3 /ColorSpace /DeviceGray \
+                  /Coords [20 20 0 20 20 20] /Function << /FunctionType 2 /Domain [0 1] \
+                  /C0 [0] /C1 [1] /N 1 >> >> >>"
+                    .to_vec(),
+            ),
+        ],
+    );
+    let r = run(&pdf, &RedactOptions::new()).unwrap();
+    assert_eq!(r.annotations_removed, 0);
+    assert!(!text(&r.output).contains("SECRETTEXT"));
+    // An axial shading whose axis runs along the page's foot, clipped to
+    // it: kept, the page redacted.
+    let axial = b"<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [0 5 200 5] \
+                  /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>"
+        .to_vec();
+    let pdf = page(
+        format!("q 0 0 200 10 re W n /Sh sh Q {KEPT} BT /F1 10 Tf 80 100 Td (SECRETTEXT) Tj ET")
+            .as_bytes(),
+        "/Shading << /Sh 30 0 R >>",
+        "",
+        "",
+        vec![(30, axial)],
+    );
+    let r = run(&pdf, &RedactOptions::new()).unwrap();
+    assert!(!text(&r.output).contains("SECRETTEXT"));
 }
