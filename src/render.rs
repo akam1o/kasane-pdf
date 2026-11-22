@@ -1961,6 +1961,9 @@ const MAX_PATTERN_DEPTH: u32 = 8;
 /// Up to this many cells a fill is executed cell by cell (crisp,
 /// exact); denser tilings go through the cached cell.
 const DIRECT_TILES: u64 = 64;
+/// A tiling pattern's /BBox exceeding its step by less than this many
+/// device pixels does not make its tiles overlap (see `paint_tiling`).
+const OVERLAP_MIN_PX: f64 = 1.0 / 256.0;
 
 /// A device-space mask of the graphics state (clip, hard clip, soft
 /// mask). Held through `Rc`: saving the state (`q`, a form, a group)
@@ -6533,8 +6536,18 @@ impl<'a> Renderer<'a> {
         }
         let cell_w = (pat_ts.sx * tp.xstep as f32).hypot(pat_ts.ky * tp.xstep as f32);
         let cell_h = (pat_ts.kx * tp.ystep as f32).hypot(pat_ts.sy * tp.ystep as f32);
-        let overlap =
-            bb.urx - bb.llx > tp.xstep * (1.0 + 1e-6) || bb.ury - bb.lly > tp.ystep * (1.0 + 1e-6);
+        // Tiles overlap when the /BBox exceeds the step by a visible
+        // amount. Producers that write reals to a few decimals give a
+        // /BBox of one step plus rounding (TikZ: 2 × 1.49442 for a 2.98883
+        // step); that excess, under OVERLAP_MIN_PX of a device pixel, is
+        // dropped with the cached cell instead of forcing every tile to
+        // be executed (seams where tiles meet, and max_pattern_tiles on
+        // large areas).
+        let exceeds = |extent: f64, step: f64, device: f32| {
+            extent > step * (1.0 + 1e-6) && (extent - step) / step * device as f64 >= OVERLAP_MIN_PX
+        };
+        let overlap = exceeds(bb.urx - bb.llx, tp.xstep, cell_w)
+            || exceeds(bb.ury - bb.lly, tp.ystep, cell_h);
         let cached_ok = !overlap
             && cell_w.is_finite()
             && cell_h.is_finite()

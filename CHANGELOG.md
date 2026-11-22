@@ -6,6 +6,15 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Tiling patterns whose `/BBox` exceeds the step only by the rounding of
+  reals written to a few decimals (TikZ / PGF patterns) are no longer
+  treated as overlapping tiles: they are drawn from the cached cell like
+  any pattern of one-step cells. Each tile was executed on its own,
+  which left lighter seams where tiles meet, and on a large area
+  exceeded `max_pattern_tiles` and refused the page. An excess of at
+  least 1/256 of a device pixel still counts as an overlap.
+
 ## [0.12.0] - 2026-11-21
 
 ### Changed

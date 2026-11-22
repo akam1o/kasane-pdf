@@ -387,6 +387,54 @@ fn overlapping_cells_are_executed_and_bounded() {
 }
 
 #[test]
+fn a_bbox_over_the_step_by_rounding_is_not_an_overlap() {
+    // TikZ-style cells: the /BBox is one step plus the rounding of reals
+    // written to five decimals. 72 × 72 cells cover the page: more than
+    // max_pattern_tiles if each were executed, so they must come from
+    // the cached cell, drawn exactly as with a /BBox of one step.
+    let cell = |half: &str| {
+        pattern(
+            &format!(
+                "/PaintType 1 /TilingType 1 /BBox [-{half} -{half} {half} {half}] \
+                 /XStep 1.4 /YStep 1.4 /Resources << >>"
+            ),
+            format!("0 0 1 RG 0.8 w -{half} 0 m {half} 0 l S").as_bytes(),
+        )
+    };
+    let draw = |half: &str| {
+        render(&page(
+            b"/Pattern cs /P scn 0 0 100 100 re f",
+            &[("P", 10)],
+            "",
+            vec![(10, cell(half))],
+        ))
+    };
+    let exact = draw("0.7").unwrap();
+    let rounded = draw("0.70001").unwrap();
+    // The same up to the 0.00001 pt the cell moves by.
+    let worst = (rounded.pixmap().data().iter())
+        .zip(exact.pixmap().data())
+        .map(|(a, b)| a.abs_diff(*b))
+        .max();
+    assert!(worst <= Some(2), "{worst:?}");
+    let inked = count(&rounded, |p| p != WHITE);
+    assert!(inked > 1000, "{inked}");
+    // An excess a device pixel can show (0.1 px here) is an overlap:
+    // every tile is executed, and these are too many.
+    let err = draw("0.75").unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::LimitExceeded {
+                limit: "max_pattern_tiles",
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+#[test]
 fn malformed_patterns_are_refused() {
     for dict in [
         "/PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 0 /YStep 20 /Resources << >>",
