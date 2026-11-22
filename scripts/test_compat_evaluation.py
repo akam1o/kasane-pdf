@@ -374,6 +374,20 @@ class ReviewedDifferences(unittest.TestCase):
                     self.assertTrue("from Poppler (mad_kp 3.0 -> 3.6)" in line
                                     or "content SSIM 0.9 -> 0.85" in line, line)
 
+    def test_an_entry_per_environment(self):
+        # The same difference reviewed in two environments: the run's own
+        # applies, whatever comes first; the other is never the reason.
+        env = {k: ENV[k] for k in cr.compat_env.COMPARED}
+        other = dict(env, os="macos-26", arch="arm64")
+        entries = self.entries(env=other) + self.entries()
+        rc, out = self.go(self.file(cssim=0.85), self.att(kp=(0.02, 3.6)), entries)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.count("ACCEPTED"), 2, out)
+        # Only the other environment's: not applied, and said so.
+        rc, out = self.go(self.file(cssim=0.85), self.att(kp=(0.02, 3.6)), self.entries(env=other))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("another environment: os, arch", out)
+
     def test_another_page_or_environment_of_the_run_is_not_covered(self):
         b = cr.summarize(run(self.file(pg2=True)), self.att(pg2=(0.02, 3.0)), ENV)
         rc, out = check(run(self.file(pg2=True)), b, env=ENV, attribution=self.att(pg2=(0.02, 3.6)),
@@ -465,7 +479,10 @@ class ReviewedDifferences(unittest.TestCase):
 
     def test_the_committed_differences_are_complete(self):
         entries = cr.load_reviewed()
-        self.assertEqual(len(entries), 2)
+        # Each of the two reviewed differences, in the Linux and the macOS
+        # reference environment (each platform's own baseline).
+        self.assertEqual(len(entries), 4)
+        self.assertEqual(len({(e["id"], e["metric"], e["env"]["os"]) for e in entries}), 4)
         for e in entries:
             self.assertEqual([k for k in cr.REVIEWED_FIELDS if e.get(k) in (None, "", {})], [], e["id"])
             self.assertIn(e["metric"], cr.REVIEWED_METRICS)

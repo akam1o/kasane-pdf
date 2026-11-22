@@ -229,7 +229,8 @@ against an unarmed baseline.
 ### Reviewed differences
 
 `compat/reviewed-differences.json` lists a few changes of **one
-measure on one page** (an open page's `mad_kp` / `mad_km` / `dpx_kp` /
+measure on one page** (one entry per reference environment it was
+reviewed in — each platform's baseline has its own) (an open page's `mad_kp` / `mad_km` / `dpx_kp` /
 `dpx_km`, or a page's content SSIM) that were investigated and accepted
 in a review. Each entry records the case id, the input's SHA-256, the
 page, the measure and how it is taken, the environment it was reviewed
