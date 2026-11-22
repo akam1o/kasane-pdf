@@ -7,6 +7,28 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Dense tiling patterns (more than 64 tiles in a fill) are drawn from
+  a periodic texture of one step of the tiling, rendered once at up to
+  8 pixels per device pixel and integrated exactly into each device
+  pixel (a summed-area table of the period), instead of one cell at
+  device size stamped with a bilinear shader:
+  - thin lines in cells of a pixel or two keep their coverage: they
+    were drawn faintly, or not at all — the cached cell lost strokes
+    thinner than a pixel when it was 2 pixels or less, and cells of
+    0.9–3 pt at 48–96 dpi came out blank;
+  - tiles no longer blur or drift (the cell is not rounded to whole
+    pixels) and meet without seams; a line of width 0 stays one device
+    pixel; nothing is raised to a minimum width or density;
+  - cells whose `/BBox` exceeds the step — overlapping tiles, including
+    a step plus the rounding TikZ writes — are drawn the same way, the
+    texture holding the cell and every neighbour that overlaps into it,
+    composited in the tiles' order (translucent overlaps included).
+    Such fills executed every tile: seams, and on a large area a page
+    refused at `max_pattern_tiles`. Each cell execution, neighbours
+    included, still counts against `max_pattern_tiles`; the texture and
+    its table count against `max_render_buffer_bytes`.
+
+### Fixed
 - Text extraction: a `/ToUnicode` CMap that defines a code more than
   once (a whole-range mapping refined by later `bfchar` or `bfrange`
   entries) gives the code its later definition, as the CMap is read in

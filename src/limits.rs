@@ -106,12 +106,12 @@ pub struct Limits {
     /// rendering one page (Forms and images together). Bounds sibling
     /// fan-out that a depth cap alone cannot stop. Default: 10,000.
     pub max_xobject_invocations: u64,
-    /// Maximum tiling-pattern cells executed individually on one page
-    /// (§8.7.3): cells whose `/BBox` exceeds the step (overlapping
-    /// tiles) and fills with few cells run the cell content once per
-    /// tile and count here. Dense non-overlapping tilings render one
-    /// cell and stamp it with a repeating shader, whose cost is per
-    /// device pixel, so they do not count. Default: 4,096.
+    /// Maximum tiling-pattern cell executions on one page (§8.7.3).
+    /// A fill with few tiles runs the cell content once per tile; a
+    /// dense tiling renders one step of the tiling once — the cell and
+    /// each neighbour whose `/BBox` overlaps into it — and resamples it
+    /// per device pixel. Every execution counts here, whichever way.
+    /// Default: 4,096.
     pub max_pattern_tiles: u64,
     /// Maximum triangles one mesh shading (§8.7.4.5, types 4–7) may
     /// rasterise: free-form and lattice meshes beyond it are refused,

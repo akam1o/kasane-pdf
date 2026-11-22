@@ -604,6 +604,7 @@ pub fn render_page(
         pattern_stack: Vec::new(),
         pattern_tiles: 0,
         uncolored_depth: 0,
+        texel_scale: 1.0,
         oc: crate::optcontent::OcConfig::from_catalog(doc)?,
         oc_include_hidden: false,
         mc_stack: Vec::new(),
@@ -1903,6 +1904,11 @@ pub(crate) struct Renderer<'a> {
     /// Depth of `/PaintType 2` (uncoloured) cells being painted: colour
     /// operators inside are ignored (§8.7.3.3).
     uncolored_depth: u32,
+    /// Pixels of the target per device pixel: 1 on the page, more in a
+    /// supersampled tiling texture (`paint_tiles_texture`). A line of
+    /// width 0 is one device pixel wide, and stroke adjustment is off,
+    /// there.
+    texel_scale: f64,
     /// Optional-content configuration of the document (§8.11).
     oc: crate::optcontent::OcConfig,
     /// Extraction only: report text inside hidden optional content too
@@ -1959,8 +1965,119 @@ enum PatternPaint {
 /// pattern whose cell fills with a pattern …).
 const MAX_PATTERN_DEPTH: u32 = 8;
 /// Up to this many cells a fill is executed cell by cell (crisp,
-/// exact); denser tilings go through the cached cell.
+/// exact); denser tilings go through the periodic texture.
 const DIRECT_TILES: u64 = 64;
+/// A tiling's periodic texture (`paint_tiles_texture`): up to this many
+/// texture pixels per device pixel along each axis, fewer for a large
+/// cell so that the texture stays near TEXTURE_TEXELS pixels, at least
+/// TEXTURE_MIN pixels each way, and never more than TEXTURE_MAX_TEXELS
+/// (a larger cell is executed tile by tile).
+const TEXTURE_SCALE: f64 = 8.0;
+const TEXTURE_TEXELS: u64 = 1 << 18;
+const TEXTURE_MIN: u32 = 32;
+const TEXTURE_MAX_TEXELS: u64 = 1 << 21;
+/// A rotated or skewed device pixel is integrated in this many parts
+/// per axis, each over its bounding box in the texture.
+const TEXTURE_SKEW_SPLIT: u32 = 2;
+/// Rows of the device layer the texture is integrated into at a time.
+const TEXTURE_STRIP_ROWS: u32 = 64;
+
+/// The size of a tiling's periodic texture (`texture_plan`).
+#[derive(Clone, Copy, Debug)]
+struct TexturePlan {
+    width: u32,
+    height: u32,
+}
+/// How many steps a /BBox of `extent` reaches across: the tiles that
+/// paint into one step of the tiling along that axis (1: no overlap).
+fn tiling_reach(extent: f64, step: f64) -> f64 {
+    ((extent / step) * (1.0 - 1e-9)).ceil().max(1.0)
+}
+
+/// The bytes of a `width` × `height` periodic texture and its
+/// summed-area table.
+fn texture_bytes(width: u32, height: u32) -> u64 {
+    let (w, h) = (width as u64, height as u64);
+    w * h * 4 + (w + 1) * (h + 1) * std::mem::size_of::<[f64; 4]>() as u64
+}
+
+/// The summed-area table of one period of a periodic texture
+/// (premultiplied RGBA): the exact integral of the texture — constant
+/// over each texture pixel, repeated in both directions — over any
+/// axis-aligned rectangle, in texture pixels, wherever it lies.
+struct PeriodicSat {
+    width: usize,
+    height: usize,
+    /// (width + 1) × (height + 1): the integral over [0, i] × [0, j].
+    sums: Vec<[f64; 4]>,
+}
+
+impl PeriodicSat {
+    fn new(tex: &Pixmap) -> PeriodicSat {
+        let (w, h) = (tex.width() as usize, tex.height() as usize);
+        let mut sums = vec![[0f64; 4]; (w + 1) * (h + 1)];
+        let px = tex.pixels();
+        for j in 0..h {
+            let mut row = [0f64; 4];
+            for i in 0..w {
+                let p = px[j * w + i];
+                let c = [p.red(), p.green(), p.blue(), p.alpha()];
+                for k in 0..4 {
+                    row[k] += c[k] as f64;
+                    sums[(j + 1) * (w + 1) + i + 1][k] = sums[j * (w + 1) + i + 1][k] + row[k];
+                }
+            }
+        }
+        PeriodicSat {
+            width: w,
+            height: h,
+            sums,
+        }
+    }
+
+    fn at(&self, i: usize, j: usize) -> [f64; 4] {
+        self.sums[j * (self.width + 1) + i]
+    }
+
+    /// The integral over [0, x] × [0, y] of the periodic texture, for
+    /// x, y ≥ 0: whole periods and the bilinear remainder (the texture
+    /// is constant per pixel, so its integral is bilinear between grid
+    /// points).
+    fn integral(&self, x: f64, y: f64) -> [f64; 4] {
+        let (w, h) = (self.width as f64, self.height as f64);
+        let (qx, qy) = ((x / w).floor(), (y / h).floor());
+        let (rx, ry) = (x - qx * w, y - qy * h);
+        let (ix, iy) = (
+            (rx as usize).min(self.width - 1),
+            (ry as usize).min(self.height - 1),
+        );
+        let (fx, fy) = (rx - ix as f64, ry - iy as f64);
+        let lerp = |a: [f64; 4], b: [f64; 4], t: f64| -> [f64; 4] {
+            [0, 1, 2, 3].map(|k| a[k] + (b[k] - a[k]) * t)
+        };
+        let s = lerp(
+            lerp(self.at(ix, iy), self.at(ix + 1, iy), fx),
+            lerp(self.at(ix, iy + 1), self.at(ix + 1, iy + 1), fx),
+            fy,
+        );
+        let total = self.at(self.width, self.height);
+        // Full-height columns up to rx, full-width rows up to ry.
+        let cols = lerp(self.at(ix, self.height), self.at(ix + 1, self.height), fx);
+        let rows = lerp(self.at(self.width, iy), self.at(self.width, iy + 1), fy);
+        [0, 1, 2, 3].map(|k| qx * qy * total[k] + qx * rows[k] + qy * cols[k] + s[k])
+    }
+
+    /// The average over [u, u + du] × [v, v + dv] (du, dv > 0).
+    fn average(&self, u: f64, v: f64, du: f64, dv: f64) -> [f64; 4] {
+        // Shift by whole periods so the corners are small and positive.
+        let (w, h) = (self.width as f64, self.height as f64);
+        let (u, v) = (u - (u / w).floor() * w, v - (v / h).floor() * h);
+        let (a, b) = (self.integral(u + du, v + dv), self.integral(u, v + dv));
+        let (c, d) = (self.integral(u + du, v), self.integral(u, v));
+        let area = du * dv;
+        [0, 1, 2, 3].map(|k| (a[k] - b[k] - c[k] + d[k]) / area)
+    }
+}
 
 /// A device-space mask of the graphics state (clip, hard clip, soft
 /// mask). Held through `Rc`: saving the state (`q`, a form, a group)
@@ -2172,6 +2289,7 @@ impl<'a> Renderer<'a> {
             pattern_stack: Vec::new(),
             pattern_tiles: 0,
             uncolored_depth: 0,
+            texel_scale: 1.0,
             oc: crate::optcontent::OcConfig::from_catalog(doc)?,
             oc_include_hidden: false,
             mc_stack: Vec::new(),
@@ -6443,14 +6561,14 @@ impl<'a> Renderer<'a> {
     /// (i, j) is the cell translated by (i·XStep, j·YStep) in pattern
     /// space, clipped to `/BBox`, and only the tiles that can touch the
     /// mask's device bounds are considered. Two strategies, one result:
-    /// a fill with at most [`DIRECT_TILES`] cells — or whose `/BBox`
-    /// exceeds the step, so tiles overlap — executes the cell content
-    /// once per tile (bounded by `max_pattern_tiles`); a dense
-    /// non-overlapping tiling renders one cell into an offscreen
-    /// pixmap of its device size and stamps it with a repeating
-    /// bilinear shader (cost per device pixel, so no tile bound).
-    /// The fill alpha and blend mode apply once to the stamped result,
-    /// as for a transparency group.
+    /// a fill with at most [`DIRECT_TILES`] cells executes the cell
+    /// content once per tile; a denser one renders one step of the
+    /// tiling into its periodic texture and integrates it into each
+    /// device pixel (`paint_tiles_texture`) — unless that would execute
+    /// more cells than tiles, or the texture would be too large. Every
+    /// cell execution counts against `max_pattern_tiles`. The fill
+    /// alpha and blend mode apply once to the textured result, as for a
+    /// transparency group.
     fn paint_tiling(&mut self, tp: Rc<TilingPattern>, mask: Mask) -> Result<(), Error> {
         if self.pattern_depth >= MAX_PATTERN_DEPTH {
             return Err(Error::LimitExceeded {
@@ -6533,16 +6651,24 @@ impl<'a> Renderer<'a> {
         }
         let cell_w = (pat_ts.sx * tp.xstep as f32).hypot(pat_ts.ky * tp.xstep as f32);
         let cell_h = (pat_ts.kx * tp.ystep as f32).hypot(pat_ts.sy * tp.ystep as f32);
-        let overlap =
-            bb.urx - bb.llx > tp.xstep * (1.0 + 1e-6) || bb.ury - bb.lly > tp.ystep * (1.0 + 1e-6);
-        let cached_ok = !overlap
-            && cell_w.is_finite()
+        // The periodic texture holds one step of the tiling: the cell and
+        // every earlier neighbour whose /BBox reaches into it (tiles that
+        // overlap, §8.7.3.1). It costs that many cell executions, counted
+        // as tiles; it is used when there are more tiles than DIRECT_TILES
+        // and it executes fewer cells than the tiles it replaces.
+        let wrapped =
+            tiling_reach(bb.urx - bb.llx, tp.xstep) * tiling_reach(bb.ury - bb.lly, tp.ystep);
+        let texture = (cell_w.is_finite()
             && cell_h.is_finite()
             && cell_w >= 1e-3
-            && cell_h >= 1e-3;
-        let direct = !cached_ok || tiles <= DIRECT_TILES as f64;
-        if direct {
-            let n = tiles as u64;
+            && cell_h >= 1e-3
+            && tiles > DIRECT_TILES as f64
+            && wrapped < tiles)
+            .then(|| self.texture_plan(cell_w, cell_h))
+            .flatten();
+        let direct = texture.is_none();
+        {
+            let n = if direct { tiles as u64 } else { wrapped as u64 };
             if n > self.limits.max_pattern_tiles
                 || self.pattern_tiles.saturating_add(n) > self.limits.max_pattern_tiles
             {
@@ -6580,7 +6706,8 @@ impl<'a> Renderer<'a> {
                 alpha,
             )
         } else {
-            self.paint_tiles_cached(&tp, &ops, pat_ts, &mask, cell_w, cell_h, dev, alpha)
+            let plan = texture.expect("a texture plan");
+            self.paint_tiles_texture(&tp, &ops, &to_page, &mask, plan, dev, alpha)
         };
         self.leave_cell(saved);
         r
@@ -6638,6 +6765,22 @@ impl<'a> Renderer<'a> {
 
     /// Fresh graphics state for one cell: `ctm` as the CTM, the outer
     /// fill colour for an uncoloured pattern, `clip` as the clip.
+    /// The graphics state's stroke for a path drawn through `ts` on the
+    /// current target: in a supersampled texture, a line of width 0 (one
+    /// device pixel, §8.4.3.2) is `texel_scale` pixels of it wide.
+    fn target_stroke(&self, ts: Transform) -> Stroke {
+        let mut stroke = gs_stroke(&self.gs);
+        if self.gs.line_width == 0.0 && self.texel_scale > 1.0 {
+            let scale = (ts.sx as f64 * ts.sy as f64 - ts.kx as f64 * ts.ky as f64)
+                .abs()
+                .sqrt();
+            if scale.is_normal() {
+                stroke.width = (self.texel_scale / scale) as f32;
+            }
+        }
+        stroke
+    }
+
     fn reset_cell_state(&mut self, tp: &TilingPattern, ctm: Matrix, clip: Option<Rc<GsMask>>) {
         self.gs = GraphicsState::new();
         self.gs.ctm = ctm;
@@ -6725,23 +6868,77 @@ impl<'a> Renderer<'a> {
         Ok(())
     }
 
-    /// Render one cell into a pixmap of its device size and stamp it
-    /// across the mask with a repeating shader.
+    /// The layout of a tiling's periodic texture: the cell's device size
+    /// times a scale of up to [`TEXTURE_SCALE`] (smaller for large cells,
+    /// so the texture stays near [`TEXTURE_TEXELS`]; 1 inside another
+    /// texture, which is supersampled already), at least
+    /// [`TEXTURE_MIN`] pixels each way; `None` when its texels exceed
+    /// [`TEXTURE_MAX_TEXELS`] or the render's buffer budget (the tiles
+    /// are then executed one by one).
+    fn texture_plan(&self, cell_w: f32, cell_h: f32) -> Option<TexturePlan> {
+        let area = cell_w as f64 * cell_h as f64;
+        let scale = if self.texel_scale > 1.0 {
+            1.0
+        } else {
+            (TEXTURE_TEXELS as f64 / area)
+                .sqrt()
+                .clamp(1.0, TEXTURE_SCALE)
+        };
+        let side = |cell: f32| -> Option<u32> {
+            let n = (cell as f64 * scale).ceil().max(TEXTURE_MIN as f64);
+            (n.is_finite() && n <= u32::MAX as f64).then_some(n as u32)
+        };
+        let (width, height) = (side(cell_w)?, side(cell_h)?);
+        let texels = width as u64 * height as u64;
+        if texels > TEXTURE_MAX_TEXELS {
+            return None;
+        }
+        let bytes = texture_bytes(width, height);
+        let page = self.pixmap.width() as u64 * self.pixmap.height() as u64 * 4;
+        if self.layer_bytes.saturating_add(page).saturating_add(bytes)
+            > self.limits.max_render_buffer_bytes
+        {
+            return None;
+        }
+        Some(TexturePlan { width, height })
+    }
+
+    /// Paint a tiling from its periodic texture: one step of the
+    /// tiling in pattern space, rendered once at `plan`'s size — the
+    /// cell, then every earlier neighbour whose /BBox reaches into the
+    /// step (overlapping tiles, in the order the tiles are painted),
+    /// each clipped to its /BBox — then integrated into the device: each
+    /// device pixel is the exact average of the periodic texture over
+    /// its footprint (a summed-area table of one period, `PeriodicSat`;
+    /// a rotated or skewed footprint is split into
+    /// [`TEXTURE_SKEW_SPLIT`]² parts, each taken over its bounding box).
+    /// Nothing is rounded to whole pixels and nothing is interpolated,
+    /// so tiles neither blur, drift nor leave seams, and a cell smaller
+    /// than a pixel contributes its true average. The result is
+    /// composited through `mask` with the fill alpha and blend mode, as
+    /// one group, a strip of rows at a time.
     #[allow(clippy::too_many_arguments)]
-    fn paint_tiles_cached(
+    fn paint_tiles_texture(
         &mut self,
         tp: &TilingPattern,
         ops: &[Operation],
-        pat_ts: Transform,
+        to_page: &Matrix,
         mask: &Mask,
-        cell_w: f32,
-        cell_h: f32,
+        plan: TexturePlan,
         dev: (i32, i32, i32, i32),
         alpha: (f64, f64, tiny_skia::BlendMode),
     ) -> Result<(), Error> {
-        let cw = (cell_w.ceil() as u32).clamp(1, self.limits.max_render_pixels);
-        let ch = (cell_h.ceil() as u32).clamp(1, self.limits.max_render_pixels);
-        let bytes = cw as u64 * ch as u64 * 4;
+        // Pattern space → the current target's pixels.
+        let m = to_page.concat(self.user_to_pix_exact);
+        let det = m.a * m.d - m.b * m.c;
+        let (unit_x, unit_y) = (m.a.hypot(m.b), m.c.hypot(m.d));
+        if !(det.is_normal() && unit_x.is_normal() && unit_y.is_normal()) {
+            return Ok(());
+        }
+        let (tw, th) = (plan.width, plan.height);
+        let strip_w = (dev.2 - dev.0 + 1) as u32;
+        let strip_h = TEXTURE_STRIP_ROWS.min((dev.3 - dev.1 + 1) as u32);
+        let bytes = texture_bytes(tw, th) + strip_w as u64 * strip_h as u64 * 4;
         let page_bytes = self.pixmap.width() as u64 * self.pixmap.height() as u64 * 4;
         if self
             .layer_bytes
@@ -6754,72 +6951,131 @@ impl<'a> Renderer<'a> {
                 max: self.limits.max_render_buffer_bytes,
             });
         }
-        let mut cell = Pixmap::new(cw, ch)
+        let mut tex = Pixmap::new(tw, th)
             .ok_or_else(|| Error::Structure("pattern cell allocation failed".into()))?;
-        // Pattern space → cell pixels: one step along each axis fills
-        // the cell exactly; (llx, lly) sits at the origin.
-        let sx = cw as f32 / tp.xstep as f32;
-        let sy = ch as f32 / tp.ystep as f32;
-        let cell_ts = Transform::from_row(
-            sx,
-            0.0,
-            0.0,
-            sy,
-            -(tp.bbox.llx as f32) * sx,
-            -(tp.bbox.lly as f32) * sy,
-        );
-        std::mem::swap(&mut *self.pixmap, &mut cell);
-        let saved_u2p = std::mem::replace(&mut self.user_to_pix, cell_ts);
+        // Pattern space → texture pixels: one step fills the texture
+        // along each axis; (llx, lly) is its origin.
+        let sx = tw as f64 / tp.xstep;
+        let sy = th as f64 / tp.ystep;
+        let (ox, oy) = (-tp.bbox.llx * sx, -tp.bbox.lly * sy);
+        let tex_ts = Transform::from_row(sx as f32, 0.0, 0.0, sy as f32, ox as f32, oy as f32);
+        let nx = tiling_reach(tp.bbox.urx - tp.bbox.llx, tp.xstep) as i64;
+        let ny = tiling_reach(tp.bbox.ury - tp.bbox.lly, tp.ystep) as i64;
+        std::mem::swap(&mut *self.pixmap, &mut tex);
+        let saved_u2p = std::mem::replace(&mut self.user_to_pix, tex_ts);
         let saved_u2p_exact = std::mem::replace(
             &mut self.user_to_pix_exact,
-            Matrix::new(
-                sx as f64,
-                0.0,
-                0.0,
-                sy as f64,
-                cell_ts.tx as f64,
-                cell_ts.ty as f64,
-            ),
+            Matrix::new(sx, 0.0, 0.0, sy, ox, oy),
         );
+        // Texture pixels per device pixel (geometric mean of the axes).
+        let saved_scale = self.texel_scale;
+        self.texel_scale = saved_scale * ((sx / unit_x) * (sy / unit_y)).sqrt();
         self.layer_bytes += bytes;
-        let r = (|| {
-            // Alpha and blend are reset inside the cell and applied once
-            // when the tiles are stamped.
-            self.reset_cell_state(tp, Matrix::IDENTITY, None);
-            self.intersect_clip_rect(&tp.bbox)?;
-            self.run(ops)
+        let r = (|| -> Result<(), Error> {
+            // Alpha and blend are reset in the cell and applied once to
+            // the result.
+            for dj in (1 - ny)..=0 {
+                for di in (1 - nx)..=0 {
+                    let at = Matrix::translate(di as f64 * tp.xstep, dj as f64 * tp.ystep);
+                    self.reset_cell_state(tp, at, None);
+                    self.intersect_clip_rect(&tp.bbox)?;
+                    self.run(ops)?;
+                }
+            }
+            Ok(())
         })();
-        self.layer_bytes -= bytes;
+        self.texel_scale = saved_scale;
         self.user_to_pix = saved_u2p;
         self.user_to_pix_exact = saved_u2p_exact;
-        std::mem::swap(&mut *self.pixmap, &mut cell);
-        r?;
-        let Some(cell_inv) = cell_ts.invert() else {
-            return Ok(());
+        std::mem::swap(&mut *self.pixmap, &mut tex);
+        if let Err(e) = r {
+            self.layer_bytes -= bytes;
+            return Err(e);
+        }
+        let sat = PeriodicSat::new(&tex);
+        drop(tex);
+
+        // Target point (x, y) → texture coordinates (texels, periodic).
+        let (ua, ub) = (m.d / det * sx, -m.c / det * sx);
+        let uc = ((m.c * m.f - m.d * m.e) / det - tp.bbox.llx) * sx;
+        let (va, vb) = (-m.b / det * sy, m.a / det * sy);
+        let vc = ((m.b * m.e - m.a * m.f) / det - tp.bbox.lly) * sy;
+        // An axis-aligned map (scale, flip, quarter turn): a pixel's
+        // footprint is a rectangle of the texture, integrated whole.
+        let aligned = (ub == 0.0 && va == 0.0) || (ua == 0.0 && vb == 0.0);
+        let n = if aligned { 1 } else { TEXTURE_SKEW_SPLIT };
+        let part = 1.0 / n as f64;
+        // Each part's footprint: its bounding box in the texture.
+        let (du, dv) = ((ua.abs() + ub.abs()) * part, (va.abs() + vb.abs()) * part);
+        let inv_parts = 1.0 / (n * n) as f64;
+        let Some(mut layer) = Pixmap::new(strip_w, strip_h) else {
+            self.layer_bytes -= bytes;
+            return Err(Error::Structure("pattern layer allocation failed".into()));
         };
-        let shader_ts = cell_inv.post_concat(pat_ts);
-        let paint = Paint {
-            shader: tiny_skia::Pattern::new(
-                cell.as_ref(),
-                tiny_skia::SpreadMode::Repeat,
-                tiny_skia::FilterQuality::Bilinear,
-                clamp01(alpha.0) as f32,
-                shader_ts,
-            ),
+        let paint = tiny_skia::PixmapPaint {
+            opacity: clamp01(alpha.0) as f32,
             blend_mode: alpha.2,
-            anti_alias: false,
-            ..Default::default()
+            quality: tiny_skia::FilterQuality::Nearest,
         };
-        let Some(rect) = tiny_skia::Rect::from_ltrb(
-            dev.0 as f32,
-            dev.1 as f32,
-            (dev.2 + 1) as f32,
-            (dev.3 + 1) as f32,
-        ) else {
-            return Ok(());
-        };
-        self.pixmap
-            .fill_rect(rect, &paint, Transform::identity(), Some(mask));
+        let (mw, mdata) = (mask.width() as usize, mask.data());
+        let mut y0 = dev.1;
+        {
+            while y0 <= dev.3 {
+                let rows = (TEXTURE_STRIP_ROWS as i32).min(dev.3 - y0 + 1) as u32;
+                layer.fill(tiny_skia::Color::TRANSPARENT);
+                let pixels = layer.pixels_mut();
+                for row in 0..rows {
+                    let y = y0 + row as i32;
+                    for col in 0..strip_w {
+                        let x = dev.0 + col as i32;
+                        if mdata[y as usize * mw + x as usize] == 0 {
+                            continue;
+                        }
+                        let mut acc = [0f64; 4];
+                        for b in 0..n {
+                            let fy = y as f64 + (b as f64 + 0.5) * part;
+                            for a in 0..n {
+                                let fx = x as f64 + (a as f64 + 0.5) * part;
+                                let u = ua * fx + ub * fy + uc;
+                                let v = va * fx + vb * fy + vc;
+                                let c = sat.average(u - du / 2.0, v - dv / 2.0, du, dv);
+                                for k in 0..4 {
+                                    acc[k] += c[k];
+                                }
+                            }
+                        }
+                        let [r, g, b, a] =
+                            acc.map(|c| (c * inv_parts).round().clamp(0.0, 255.0) as u8);
+                        if a > 0 {
+                            if let Some(c) = tiny_skia::PremultipliedColorU8::from_rgba(
+                                r.min(a),
+                                g.min(a),
+                                b.min(a),
+                                a,
+                            ) {
+                                pixels[(row * strip_w + col) as usize] = c;
+                            }
+                        }
+                    }
+                }
+                let strip = if rows == strip_h {
+                    None
+                } else {
+                    tiny_skia::IntRect::from_xywh(0, 0, strip_w, rows)
+                        .and_then(|r| layer.clone_rect(r))
+                };
+                self.pixmap.draw_pixmap(
+                    dev.0,
+                    y0,
+                    strip.as_ref().map_or(layer.as_ref(), |p| p.as_ref()),
+                    &paint,
+                    Transform::identity(),
+                    Some(mask),
+                );
+                y0 += rows as i32;
+            }
+        }
+        self.layer_bytes -= bytes;
         Ok(())
     }
 
@@ -7798,7 +8054,7 @@ impl<'a> Renderer<'a> {
         let stroke = match kind {
             PaintKind::Fill(_) => gs_stroke(&self.gs),
             _ => bounded_stroke(
-                &gs_stroke(&self.gs),
+                &self.target_stroke(ts),
                 ts,
                 &path,
                 self.pixmap.width(),
@@ -7809,7 +8065,7 @@ impl<'a> Renderer<'a> {
         // Stroke adjustment (§10.7.5): axis-aligned rectangles and
         // straight strokes get edges on whole pixels. Pattern paint and
         // other shapes are drawn exactly.
-        let adjust = self.gs.stroke_adjust;
+        let adjust = self.gs.stroke_adjust && self.texel_scale == 1.0;
         let adjusted_fill = match kind {
             PaintKind::Fill(_) | PaintKind::FillStroke(_)
                 if adjust && !self.gs.fill_space.is_pattern() =>
@@ -8756,6 +9012,67 @@ fn hairline_width() -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `w` × `h` texture whose pixel (x, y) is opaque grey `f(x, y)`.
+    fn texture(w: u32, h: u32, f: impl Fn(u32, u32) -> u8) -> Pixmap {
+        let mut p = Pixmap::new(w, h).unwrap();
+        for y in 0..h {
+            for x in 0..w {
+                let v = f(x, y);
+                p.pixels_mut()[(y * w + x) as usize] =
+                    tiny_skia::PremultipliedColorU8::from_rgba(v, v, v, 255).unwrap();
+            }
+        }
+        p
+    }
+
+    #[test]
+    fn periodic_sat_integrates_exactly_anywhere() {
+        let tex = texture(5, 3, |x, y| (x * 40 + y * 7) as u8);
+        let sat = PeriodicSat::new(&tex);
+        let px = |x: i64, y: i64| (x.rem_euclid(5) * 40 + y.rem_euclid(3) * 7) as f64;
+        // One texel, anywhere — the periodic copy far away and negative.
+        for (x, y) in [(0, 0), (4, 2), (5, 3), (-1, -1), (1003, -998)] {
+            let c = sat.average(x as f64, y as f64, 1.0, 1.0);
+            assert!((c[0] - px(x, y)).abs() < 1e-6, "({x}, {y}): {}", c[0]);
+            assert!((c[3] - 255.0).abs() < 1e-6);
+        }
+        // Fractional boxes: the area-weighted mean of the texels cut.
+        let c = sat.average(0.5, 0.0, 1.0, 1.0);
+        assert!((c[0] - (px(0, 0) + px(1, 0)) / 2.0).abs() < 1e-6);
+        let c = sat.average(4.75, 2.5, 0.5, 1.0);
+        let want = (px(4, 2) + px(5, 2) + px(4, 3) + px(5, 3)) / 4.0;
+        assert!((c[0] - want).abs() < 1e-6, "{} {want}", c[0]);
+        // Whole periods: the texture's mean, wherever they start.
+        let mean = (0..5)
+            .flat_map(|x| (0..3).map(move |y| px(x, y)))
+            .sum::<f64>()
+            / 15.0;
+        for (x, y) in [(0.0, 0.0), (2.3, -7.9), (-1e4 + 0.37, 5e3 + 0.11)] {
+            let c = sat.average(x, y, 10.0, 6.0);
+            assert!((c[0] - mean).abs() < 1e-6, "({x}, {y}): {}", c[0]);
+        }
+    }
+
+    #[test]
+    fn the_texture_plan_is_bounded() {
+        // A plan never exceeds TEXTURE_MAX_TEXELS; a larger cell has none
+        // (its tiles are executed one by one, against max_pattern_tiles).
+        let scale = |cell: f64| {
+            (TEXTURE_TEXELS as f64 / (cell * cell))
+                .sqrt()
+                .clamp(1.0, TEXTURE_SCALE)
+        };
+        for cell in [1e-3, 0.5, 1.0, 3.0, 100.0, 1000.0] {
+            let side = (cell * scale(cell)).ceil().max(TEXTURE_MIN as f64);
+            assert!(side * side <= TEXTURE_MAX_TEXELS as f64, "{cell}");
+        }
+        assert!(texture_bytes(1 << 11, 1 << 10) < 256 << 20);
+        assert_eq!(tiling_reach(2.98884, 2.98883), 2.0);
+        assert_eq!(tiling_reach(2.98883, 2.98883), 1.0);
+        assert_eq!(tiling_reach(1.0, 3.0), 1.0);
+        assert_eq!(tiling_reach(60.0, 55.0), 2.0);
+    }
 
     fn rect_path(r: [f32; 4]) -> tiny_skia::Path {
         let mut pb = PathBuilder::new();

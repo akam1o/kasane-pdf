@@ -2,7 +2,7 @@
 //! the pattern matrix maps pattern space to the default space of the
 //! pattern's parent content stream — the glyph description, i.e. glyph
 //! space — so the cells scale with the glyph. Cells whose `/BBox`
-//! exceeds the step are executed one by one and count against
+//! exceeds the step overlap; every cell execution counts against
 //! `max_pattern_tiles`.
 
 mod common;
@@ -13,7 +13,7 @@ use kasane_pdf::{render_page, Document, Error, Limits, RenderOptions};
 /// One glyph, 100 pt (FontMatrix 0.001, Tfs 100), filling the 1000-unit
 /// square [0 0 1000 1000] of glyph space with a pattern of step 100
 /// glyph units (10 pt on the page): a black 50 × 50 square per cell,
-/// `/BBox` 120 × 120 (overlapping, so cells run one at a time).
+/// `/BBox` 120 × 120 (overlapping its neighbours).
 fn pdf() -> Vec<u8> {
     build_pdf(&[
         (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
@@ -67,12 +67,13 @@ fn the_cells_live_in_glyph_space() {
 
 #[test]
 fn overlapping_cells_count_against_max_pattern_tiles() {
-    // 10 × 10 cells cover the square; the bound adds at most one cell
-    // per side for the overlap and one for rounding: 12 × 12 = 144.
-    assert!(render(144).is_ok());
-    match render(99) {
+    // 10 × 10 cells and more cover the square: drawn from the periodic
+    // texture, one step of the tiling holds the cell and the three
+    // neighbours whose /BBox reaches into it — 4 executions, counted.
+    assert!(render(4).is_ok());
+    match render(3) {
         Err(Error::LimitExceeded { limit, max }) => {
-            assert_eq!((limit, max), ("max_pattern_tiles", 99))
+            assert_eq!((limit, max), ("max_pattern_tiles", 3))
         }
         other => panic!("expected the tile limit, got {:?}", other.map(|_| ())),
     }

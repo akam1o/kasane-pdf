@@ -130,6 +130,16 @@ are on the [roadmap](architecture.md#roadmap).
   release on the costliest path (soft masks), so it fits a 2 MiB thread.
   A caller raising the limit needs ≈ 25 KiB (debug) / 5 KiB (release)
   more stack per level. Tiling patterns nest at most 8 levels (fixed).
+- **Tiling patterns**: a fill with at most 64 tiles executes the cell
+  once per tile, each clipped to its `/BBox` with anti-aliased edges,
+  so content reaching a tile's edge shows faint seams there (as in
+  MuPDF). Denser fills use the periodic texture (CHANGELOG, Unreleased):
+  inside it stroke adjustment (`/SA`) is not applied, and text drawn
+  with a stroke of width 0 (text rendering modes 1, 2, 5, 6) is one
+  texture pixel wide rather than one device pixel. A cell whose texture
+  would exceed 2^21 pixels (a cell over about 1,400 device pixels
+  across, with more than 64 tiles) is executed tile by tile, against
+  `max_pattern_tiles`.
 - **Clip and soft masks** (since 0.5.1): each is one byte per page
   pixel. Saved states share them and a clip that cuts nothing keeps the
   current one, so only distinct nested clips add masks; those alive at
