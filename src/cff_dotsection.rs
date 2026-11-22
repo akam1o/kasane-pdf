@@ -240,6 +240,12 @@ impl Walk<'_> {
                     };
                     i += 1;
                     if let End::EndChar = self.body(target, private, st, depth + 1)? {
+                        // After a seac the interpreter goes on reading the
+                        // caller past an endchar in a subroutine: not
+                        // followed here.
+                        if self.in_seac {
+                            return Err(Stop::Abort);
+                        }
                         ended = Some(End::EndChar);
                         break;
                     }
@@ -260,7 +266,13 @@ impl Walk<'_> {
                         let (Some(bchar), Some(achar)) = codes else {
                             return Err(Stop::Abort);
                         };
-                        if self.in_seac || self.cff.fd_select.is_some() {
+                        // Nested, in a subroutine (its caller is read on past
+                        // the subroutine's endchar), in a CID program: not
+                        // followed.
+                        if self.in_seac
+                            || !matches!(b, Body::Glyph(_))
+                            || self.cff.fd_select.is_some()
+                        {
                             return Err(Stop::Abort);
                         }
                         if depth >= MAX_DEPTH {
@@ -1141,6 +1153,39 @@ mod tests {
         let q = without_dotsection(&p).expect("rewritten");
         assert!(outline(&q, 1).is_some());
         assert_eq!(outline(&q, 125), Some(3));
+    }
+
+    #[test]
+    fn an_endchar_in_a_subroutine_after_a_seac_is_left_alone() {
+        // The review's cases: after a seac the interpreter reads on past an
+        // endchar reached through a call — with the stems it carries.
+        let s0 = glyph(&[&[19, 0xff, 12, 0], PATH, &[11]]);
+        let g2 = vec![139, 149, 139, 149, 1, 32, 10, 14];
+        let mut stems = Vec::new();
+        for op in [18u8, 23] {
+            for _ in 0..9 {
+                stems.extend_from_slice(&[139, 149]);
+            }
+            stems.push(op);
+        }
+        let seac = vec![139, 139, 204, 28, 0, 194, 14];
+        // A component calling a subroutine that ends the glyph.
+        let a = glyph(&[&stems, &[33, 10, 32, 10]]);
+        let mut glyphs = vec![vec![14]; 130];
+        glyphs[1] = seac.clone();
+        glyphs[2] = g2.clone();
+        glyphs[34] = a;
+        glyphs[125] = glyph(&[PATH, &[14]]);
+        let p = program(&glyphs, &[s0.clone(), vec![14]]);
+        assert_eq!(without_dotsection(&p), None);
+        // A seac in a subroutine, its caller reading on.
+        let mut glyphs = vec![vec![14]; 130];
+        glyphs[1] = glyph(&[&stems, &[33, 10, 32, 10, 14]]);
+        glyphs[2] = g2;
+        glyphs[34] = glyph(&[PATH, &[14]]);
+        glyphs[125] = glyph(&[PATH, &[14]]);
+        let p = program(&glyphs, &[s0, seac]);
+        assert_eq!(without_dotsection(&p), None);
     }
 
     #[test]
