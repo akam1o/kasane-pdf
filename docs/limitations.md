@@ -142,7 +142,11 @@ are on the [roadmap](architecture.md#roadmap).
   over their bounding boxes (the mean coverage is kept; edge pixels can
   differ by some levels from the exact footprint). Overlapping cells
   under a blend mode other than Normal are painted tile by tile, as are
-  fills of 64 tiles or fewer. A cell whose texture
+  fills of 64 tiles or fewer. `/TilingType` is taken as a hint: cells
+  are placed at their exact spacing (as MuPDF does), not at whole device
+  pixels; Poppler draws a pattern whose `/BBox` equals its step from a
+  tile of whole pixels, so its cells can drift from ours by a fraction of
+  a pixel per step. A cell whose texture
   would exceed 2^21 pixels (a cell over about 1,400 device pixels
   across, with more than 64 tiles) is executed tile by tile, against
   `max_pattern_tiles`.

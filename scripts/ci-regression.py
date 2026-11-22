@@ -105,6 +105,73 @@ def load_gate():
         return json.load(fh)
 
 
+# Reviewed differences (compat/reviewed-differences.json): a page whose
+# one measure moved past its threshold, investigated and accepted in a
+# review, within exactly the reviewed range. Each entry names the case,
+# its input (SHA-256), the page, the measure, the environment it was
+# reviewed in, the baseline value and the reviewed value; the original
+# regression is still printed, marked accepted, and anything else —
+# another input, environment or baseline value, a value past the
+# reviewed one, another measure or page — stays a regression.
+REVIEWED_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "compat",
+                               "reviewed-differences.json")
+REVIEWED_METRICS = {"mad_kp": "max", "mad_km": "max", "dpx_kp": "max", "dpx_km": "max", "cssim": "min"}
+REVIEWED_FIELDS = ("id", "sha256", "page", "metric", "measure", "env", "baseline", "reviewed", "reason", "review")
+
+
+def load_reviewed():
+    with open(REVIEWED_CONFIG) as fh:
+        return json.load(fh).get("differences") or []
+
+
+class Reviewed:
+    """The reviewed differences that apply to one check: `accepts` is
+    asked for each regression of a measure an entry may cover, records
+    what it accepted (`accepted`) and why an entry did not apply
+    (`refused`)."""
+
+    def __init__(self, entries, env, shas):
+        self.entries, self.env, self.shas = list(entries or []), env, shas
+        self.accepted, self.refused = [], []
+
+    def why_not(self, e, was, now):
+        missing = [k for k in REVIEWED_FIELDS if e.get(k) in (None, "", {})]
+        if missing:
+            return "evidence missing: " + ", ".join(missing)
+        bound = REVIEWED_METRICS.get(e["metric"])
+        nums = (was, now, e["baseline"], e["reviewed"])
+        if bound is None or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in nums):
+            return "not a reviewed measure or value"
+        sha = self.shas.get(e["id"])
+        if sha is None:
+            return "the input's SHA-256 is not in the run"
+        if sha != e["sha256"]:
+            return "another input (SHA-256)"
+        if self.env is None or not isinstance(e["env"], dict):
+            return "no environment to compare"
+        diff = compat_env.differences(e["env"], self.env)
+        if diff:
+            return "another environment: " + ", ".join(diff)
+        if was != e["baseline"]:
+            return f"another baseline value ({was}, reviewed from {e['baseline']})"
+        if (now > e["reviewed"]) if bound == "max" else (now < e["reviewed"]):
+            return f"past the reviewed value {e['reviewed']}"
+        return None
+
+    def accepts(self, fid, pg, metric, was, now, line):
+        for e in self.entries:
+            if e.get("id") == fid and e.get("page") == pg and e.get("metric") == metric:
+                why = self.why_not(e, was, now)
+                if why:
+                    self.refused.append(f"{line}: reviewed difference not applied ({why})")
+                    return False
+                self.accepted.append(f"{line} — accepted within the reviewed difference ({metric} "
+                                     f"{e['baseline']} -> {'at most' if REVIEWED_METRICS[metric] == 'max' else 'at least'} "
+                                     f"{e['reviewed']}; {e['review']})")
+                return True
+        return False
+
+
 def page_findings(q, gate):
     """Rules fired on one page's quality record, or an exemption."""
     ev = gate["evaluate"]
@@ -755,7 +822,7 @@ def _within(a, k):
     return compat_verdict.within(a.get(f"dpx_{k}"), a.get(f"mad_{k}"))
 
 
-def attribution_ledger(run, cur, old, meta, attribution):
+def attribution_ledger(run, cur, old, meta, attribution, reviewed=None):
     """One record per (case, page) that the baseline attributes, the run
     attributes, or the run has below the attribution threshold (M2):
     which side has the page, whether it is a baseline target, a new
@@ -858,6 +925,10 @@ def attribution_ledger(run, cur, old, meta, attribution):
                 for name, k in WITNESSES:
                     grew = [m for m, lim in ((f"dpx_{k}", OPEN_DPX_GROWTH), (f"mad_{k}", OPEN_MAD_GROWTH))
                             if na[m] - oa[m] > lim]
+                    if reviewed is not None:
+                        grew = [m for m in grew if not reviewed.accepts(
+                            fid, pg, m, oa[m], na[m],
+                            f"{fid}: open page {pg} differs more from {name} ({m} {oa[m]} -> {na[m]})")]
                     if grew:
                         reg(f"{fid}: open page {pg} differs more from {name} ("
                             + ", ".join(f"{m} {oa[m]} -> {na[m]}" for m in grew) + ")")
@@ -898,7 +969,7 @@ def attribution_ledger(run, cur, old, meta, attribution):
 
 
 def numeric_regressions(run, cur, old, base, env, attribution, require_same_env, improvements, notes,
-                        unverified=None):
+                        unverified=None, reviewed=None):
     """M1-c: the numeric comparisons, each page judged on its own — an
     improvement elsewhere never offsets a regression."""
     regs = []
@@ -920,7 +991,7 @@ def numeric_regressions(run, cur, old, base, env, attribution, require_same_env,
         return regs
     att_regs, usable = attribution_usable(meta, env, attribution)
     regs.extend(att_regs)
-    ledger = attribution_ledger(run, cur, old, meta, attribution if usable else None)
+    ledger = attribution_ledger(run, cur, old, meta, attribution if usable else None, reviewed)
     for e in ledger:
         regs.extend(e["regressions"])
         if unverified is not None:
@@ -946,7 +1017,10 @@ def numeric_regressions(run, cur, old, base, env, attribution, require_same_env,
                     if nv.get("cssim") is None:
                         regs.append(f"{fid}: page {pg} content SSIM no longer measured")
                     elif nv["cssim"] < ov["cssim"] - CONTENT_SSIM_DROP:
-                        regs.append(f"{fid}: page {pg} content SSIM {ov['cssim']} -> {nv['cssim']}")
+                        line = f"{fid}: page {pg} content SSIM {ov['cssim']} -> {nv['cssim']}"
+                        if reviewed is None or not reviewed.accepts(fid, int(pg), "cssim", ov["cssim"],
+                                                                     nv["cssim"], line):
+                            regs.append(line)
             for key in ("text_f1", "text_f1_annots"):
                 was, now = o.get(key), n.get(key)
                 if was is None:
@@ -959,7 +1033,7 @@ def numeric_regressions(run, cur, old, base, env, attribution, require_same_env,
 
 
 def check(run, base, summary_md=None, env=None, attribution=None, require_same_env=False, ledger_path=None,
-          collect=None, collect_unverified=None):
+          collect=None, collect_unverified=None, reviewed_differences=None):
     validate_run(run)
     validate_base(base)
     if attribution is not None:
@@ -1131,8 +1205,10 @@ def check(run, base, summary_md=None, env=None, attribution=None, require_same_e
                        | {"decisions": e["regressions"] + e["improvements"] + e["notes"]} for e in led],
                       fh, indent=1, sort_keys=True)
             fh.write("\n")
+    rev = Reviewed(load_reviewed() if reviewed_differences is None else reviewed_differences, env,
+                   {f["id"]: f.get("sha256") for f in run["files"]})
     regressions.extend(numeric_regressions(run, cur, old, base, env, attribution, require_same_env, improvements,
-                                           notes, collect_unverified))
+                                           notes, collect_unverified, rev))
     print(f"files: {len(cur)} now, {len(old)} in baseline, {len(missing)} missing, {len(added)} new")
     for line in notes:
         print("note:", line)
@@ -1156,8 +1232,14 @@ def check(run, base, summary_md=None, env=None, attribution=None, require_same_e
         print("rewrite configuration change (not enforced, review):", line)
     if collect is not None:
         collect.extend(regressions)
+    for line in rev.accepted:
+        print("regression under the original rule, ACCEPTED (reviewed, limited):", line)
+    for line in rev.refused:
+        print("note:", line)
     for line in regressions:
         print("REGRESSION:", line)
+    if rev.accepted:
+        print(f"{len(rev.accepted)} regression(s) under the original rule accepted as reviewed differences")
     if regressions:
         print(f"{len(regressions)} regression(s)")
         return 1

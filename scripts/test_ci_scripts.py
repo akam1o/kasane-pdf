@@ -434,6 +434,18 @@ class DataOnly(unittest.TestCase):
         self.assertEqual(cli("true"), 0)
 
 
+class TrackedFiles(unittest.TestCase):
+    """Nothing generated or private is committed: no build directory
+    (`target/`, `target-*/`), nothing of the corpus or its reports."""
+
+    def test_no_build_outputs_or_corpus_files_are_tracked(self):
+        out = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], check=True, capture_output=True).stdout
+        bad = [p for p in out.decode().split("\0") if p and (
+            any(part == "target" or part.startswith("target-") for part in p.split("/")[:-1])
+            or p.startswith(("compat/corpus/", "compat/reports/")) or p == "compat/corpus.env")]
+        self.assertEqual(bad, [])
+
+
 class ReleaseCheck(unittest.TestCase):
     """scripts/release-check.py: only a full gate, CodeQL and (when
     required) a nightly whose corpus job really ran, on the exact commit."""

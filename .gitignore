@@ -1,4 +1,6 @@
 target/
+# other build directories (an MSRV build, a control build): never committed
+target-*/
 
 # local secrets / environment config — never committed
 .env

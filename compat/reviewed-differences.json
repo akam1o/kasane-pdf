@@ -1,0 +1,73 @@
+{
+ "comment": "Differences of one measure on one page, reviewed and accepted within exactly the reviewed range (scripts/ci-regression.py, Reviewed; docs/compat-evaluation.md). Every other measure, page, input and environment is gated as before.",
+ "differences": [
+  {
+   "baseline": 18.11661,
+   "env": {
+    "arch": "x86_64",
+    "features": "cjk-fallback",
+    "mupdf": "1.27.0",
+    "os": "linux-ubuntu-26.04",
+    "poppler": "26.01.0",
+    "reference": {
+     "config_sha256": "5f969bb6ffad46813de2bb389d64c24ac5f446abf8c17311b65ac2c4cf99fb7d",
+     "font_files": 57,
+     "fontconfig": "2.17.1",
+     "fontconfig_lib": "libfontconfig.so.1.16.1",
+     "fontconfig_lib_sha256": "1c0edcb00ca244b2d50649d8e49aacfb1607a49879d7ce255b787d961241b0d5",
+     "fonts_sha256": "3f9283eecd09a846ed66ece387612526df02d73c9b0cfcb069799bd85831c7f9",
+     "freetype": "libfreetype.so.6.20.5",
+     "freetype_sha256": "1e3b06a2f9a1288f4f30af4d014a1164b6747168a2d81c99ecebd978a4a33a16",
+     "inputs_sha256": "b762e5a279034fde7e5a718f342635ca1fca8a824df01882ec53ddf1176216a7",
+     "isolation": "isolated",
+     "poppler_build_sha256": "21362dc67f8ec2ec3e850c176b91851ad1e91ea2c1065eac36e24e62b85c8eca",
+     "profile": "courier-nimbus-mono-ps-isolated",
+     "schema": 2,
+     "version": 1
+    }
+   },
+   "id": "issue16038",
+   "measure": "compat-attribute r300: 300 dpi renders box-downsampled to the 72 dpi grid, mean absolute luma difference kasane\u2013Poppler (open page: growth past OPEN_MAD_GROWTH)",
+   "metric": "mad_kp",
+   "page": 1,
+   "reason": "Dense TilingType 1 patterns, now drawn from the periodic texture at their exact spacing and line coverage (as MuPDF). Poppler draws a pattern whose /BBox equals its step from a tile bitmap of whole device pixels, so its cells drift by a fraction of a pixel per step (constant spacing, which TilingType 1 permits). Equivalence check in the same Poppler and MuPDF versions: the same geometry drawn without a pattern \u2014 Poppler's pattern render differs from its own render of it by mad 16.58; kasane's head is 6.40 from it (941c47c: 6.48), 0.99 from MuPDF's (941c47c: 2.82); kasane drawing that geometry directly is 19.38 from Poppler's pattern render. MuPDF distance improves (8.33 -> 6.60); dpx_kp and every other measure stay gated.",
+   "review": "PR #69",
+   "reviewed": 19.59712,
+   "sha256": "81cc4b4d0ed5822e70a62798d4f2ec7b3650c95b54c622026722743830daa2a9"
+  },
+  {
+   "baseline": 0.9551,
+   "env": {
+    "arch": "x86_64",
+    "features": "cjk-fallback",
+    "mupdf": "1.27.0",
+    "os": "linux-ubuntu-26.04",
+    "poppler": "26.01.0",
+    "reference": {
+     "config_sha256": "5f969bb6ffad46813de2bb389d64c24ac5f446abf8c17311b65ac2c4cf99fb7d",
+     "font_files": 57,
+     "fontconfig": "2.17.1",
+     "fontconfig_lib": "libfontconfig.so.1.16.1",
+     "fontconfig_lib_sha256": "1c0edcb00ca244b2d50649d8e49aacfb1607a49879d7ce255b787d961241b0d5",
+     "fonts_sha256": "3f9283eecd09a846ed66ece387612526df02d73c9b0cfcb069799bd85831c7f9",
+     "freetype": "libfreetype.so.6.20.5",
+     "freetype_sha256": "1e3b06a2f9a1288f4f30af4d014a1164b6747168a2d81c99ecebd978a4a33a16",
+     "inputs_sha256": "b762e5a279034fde7e5a718f342635ca1fca8a824df01882ec53ddf1176216a7",
+     "isolation": "isolated",
+     "poppler_build_sha256": "21362dc67f8ec2ec3e850c176b91851ad1e91ea2c1065eac36e24e62b85c8eca",
+     "profile": "courier-nimbus-mono-ps-isolated",
+     "schema": 2,
+     "version": 1
+    }
+   },
+   "id": "verapdf_verapdf-test-suite-6-2-3-3-t01-fail-o",
+   "measure": "compat runner content SSIM at 96 dpi against Poppler (8x8 inked windows, drop past CONTENT_SSIM_DROP)",
+   "metric": "cssim",
+   "page": 1,
+   "reason": "A tiling pattern whose /BBox exceeds its step, now drawn from the periodic texture instead of tile by tile: cell edges keep their anti-aliased coverage. Poppler snaps the filled rectangles of each tile to whole pixels (its stroke adjustment of single-rectangle fills). Equivalence check in the same Poppler and MuPDF versions: the same geometry drawn without a pattern \u2014 Poppler's pattern render scores 0.901 against its own render of it; kasane's head 0.987 (941c47c: 0.981), and 0.9996 against MuPDF's pattern render (941c47c: 0.997). Page SSIM and every other measure stay gated.",
+   "review": "PR #69",
+   "reviewed": 0.9333,
+   "sha256": "33d7ab0bdf8efb7010f914ff688fde2d6a9ec1df41409ed43eacf5a3cf6be6f1"
+  }
+ ]
+}
