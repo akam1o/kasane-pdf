@@ -33,6 +33,24 @@ use std::collections::HashMap;
 /// Tokens read across the whole program before giving up (each
 /// subroutine call is followed, so a program can cost more than its size).
 const MAX_TOKENS: usize = 16_000_000;
+/// What the rewrite may allocate, in bytes, for a program of `n` bytes:
+/// every INDEX's item list, DICT entry, copy and output byte is charged
+/// before it is made, whatever shares or overlaps in the program.
+fn budget_for(n: usize) -> usize {
+    n.saturating_mul(8).saturating_add(4 << 20)
+}
+
+/// The allocation budget of one rewrite (`budget_for`).
+struct Budget(std::cell::Cell<usize>);
+
+impl Budget {
+    /// Charge `n` bytes; `None` once the budget is spent.
+    fn take(&self, n: usize) -> Option<()> {
+        self.0.set(self.0.get().checked_sub(n)?);
+        Some(())
+    }
+}
+
 /// The Type 2 limit on subroutine nesting.
 const MAX_DEPTH: usize = 10;
 
@@ -183,6 +201,7 @@ impl Walk<'_> {
                         if !st.stack.is_empty() {
                             return Err(Stop::Abort);
                         }
+                        self.cff.budget.take(8).ok_or(Stop::Abort)?;
                         cuts.push(i);
                     }
                     st.stack.clear();
@@ -306,6 +325,14 @@ impl Walk<'_> {
         // perhaps with other stems at its masks: every reading must find
         // the operator at the same places — then removing them leaves each
         // reading as it was, less the operators.
+        // A body's first reading is kept (its cuts and its place in the
+        // map); a later one is compared with it, then dropped.
+        if !self.cuts.contains_key(&b) {
+            self.cff
+                .budget
+                .take(64usize.saturating_add(cuts.len().saturating_mul(16)))
+                .ok_or(Stop::Abort)?;
+        }
         match self.cuts.insert(b, cuts.clone()) {
             Some(old) if old != cuts => return Err(Stop::Abort),
             _ => {}
@@ -341,8 +368,8 @@ fn bias(n: usize) -> i32 {
 }
 
 /// An INDEX: its items, and where it ends in the program.
-fn index(d: &[u8], at: usize) -> Option<(Vec<&[u8]>, usize)> {
-    let count = u16::from_be_bytes([*d.get(at)?, *d.get(at + 1)?]) as usize;
+fn index<'a>(d: &'a [u8], at: usize, b: &Budget) -> Option<(Vec<&'a [u8]>, usize)> {
+    let count = u16::from_be_bytes([*d.get(at)?, *d.get(at.checked_add(1)?)?]) as usize;
     if count == 0 {
         return Some((Vec::new(), at + 2));
     }
@@ -356,6 +383,7 @@ fn index(d: &[u8], at: usize) -> Option<(Vec<&[u8]>, usize)> {
         Some(s.iter().fold(0usize, |a, &b| (a << 8) | b as usize))
     };
     let base = offs_at.checked_add((count + 1) * size)? - 1;
+    b.take(count.checked_mul(std::mem::size_of::<&[u8]>())?)?;
     let mut items = Vec::with_capacity(count);
     let mut prev = off(0)?;
     for k in 1..=count {
@@ -392,12 +420,21 @@ type Entry = (u16, Vec<u8>, Vec<i64>);
 type Dict = Vec<Entry>;
 
 /// A DICT as its operators in order, each with its operand bytes.
-fn dict(d: &[u8]) -> Option<Dict> {
+fn dict(d: &[u8], b: &Budget) -> Option<Dict> {
+    // Its operand bytes, copied whole into the entries (a real number
+    // runs as long as the DICT), then each operand and entry.
+    b.take(d.len())?;
     let mut out = Vec::new();
     let (mut raw, mut nums) = (Vec::new(), Vec::new());
     let mut i = 0;
     while i < d.len() {
         let v = d[i];
+        // An entry, or an operand (its bytes and value).
+        b.take(if v <= 21 {
+            std::mem::size_of::<Entry>()
+        } else {
+            13
+        })?;
         match v {
             0..=21 => {
                 let op = if v == 12 {
@@ -490,6 +527,8 @@ struct Private {
 }
 
 struct Cff<'a> {
+    /// What the rewrite may still allocate.
+    budget: Budget,
     data: &'a [u8],
     header: &'a [u8],
     names: &'a [u8],
@@ -532,17 +571,18 @@ impl<'a> Cff<'a> {
         if *d.first()? != 1 {
             return None;
         }
+        let budget = Budget(std::cell::Cell::new(budget_for(d.len())));
         let hdr = *d.get(2)? as usize;
-        let (_, names_end) = index(d, hdr)?;
-        let (tops, tops_end) = index(d, names_end)?;
+        let (_, names_end) = index(d, hdr, &budget)?;
+        let (tops, tops_end) = index(d, names_end, &budget)?;
         if tops.len() != 1 {
             return None;
         }
-        let top = dict(tops[0])?;
-        let (_, strings_end) = index(d, tops_end)?;
-        let (gsubrs, _) = index(d, strings_end)?;
+        let top = dict(tops[0], &budget)?;
+        let (_, strings_end) = index(d, tops_end, &budget)?;
+        let (gsubrs, _) = index(d, strings_end, &budget)?;
         let cs_at = usize::try_from(*arg(&top, CHARSTRINGS)?.first()?).ok()?;
-        let (charstrings, _) = index(d, cs_at)?;
+        let (charstrings, _) = index(d, cs_at, &budget)?;
         for op in [
             CHARSET,
             ENCODING,
@@ -568,7 +608,7 @@ impl<'a> Cff<'a> {
             if let Some(&p) = private_at.get(&(size, at)) {
                 return Some(p);
             }
-            let dct = dict(d.get(at..at.checked_add(size)?)?)?;
+            let dct = dict(d.get(at..at.checked_add(size)?)?, &budget)?;
             if !once(&dct, SUBRS) {
                 return None;
             }
@@ -578,7 +618,7 @@ impl<'a> Cff<'a> {
                     Some(match set_at.get(&set_pos) {
                         Some(&k) => k,
                         None => {
-                            subr_sets.push(index(d, set_pos)?.0);
+                            subr_sets.push(index(d, set_pos, &budget)?.0);
                             set_at.insert(set_pos, subr_sets.len() - 1);
                             subr_sets.len() - 1
                         }
@@ -598,13 +638,17 @@ impl<'a> Cff<'a> {
             if arg(&top, PRIVATE).is_some() {
                 return None;
             }
-            let (fds, _) = index(d, usize::try_from(*arg(&top, FDARRAY)?.first()?).ok()?)?;
+            let (fds, _) = index(
+                d,
+                usize::try_from(*arg(&top, FDARRAY)?.first()?).ok()?,
+                &budget,
+            )?;
             // FDSelect holds one byte per font dict.
             if fds.len() > 256 {
                 return None;
             }
             for fd in fds {
-                let fdd = dict(fd)?;
+                let fdd = dict(fd, &budget)?;
                 if !once(&fdd, PRIVATE) {
                     return None;
                 }
@@ -621,6 +665,7 @@ impl<'a> Cff<'a> {
                 }
                 _ => return None,
             };
+            budget.take(n.checked_mul(2)?)?;
             let map = fd_map(bytes, n)?;
             fd_select = Some((bytes, map));
         } else {
@@ -638,6 +683,7 @@ impl<'a> Cff<'a> {
             }
         }
         Some(Cff {
+            budget,
             data: d,
             header: d.get(..hdr)?,
             names: d.get(hdr..names_end)?,
@@ -761,21 +807,22 @@ impl<'a> Cff<'a> {
 
     /// The program rewritten with `cuts` removed from their bodies.
     fn rebuild(&self, cuts: &HashMap<Body, Vec<usize>>) -> Option<Vec<u8>> {
-        let cut = |b: Body, data: &[u8]| -> Vec<u8> {
+        let cut = |b: Body, data: &[u8]| -> Option<Vec<u8>> {
+            self.budget.take(data.len().saturating_add(24))?;
             let mut out = data.to_vec();
             if let Some(at) = cuts.get(&b) {
                 for &i in at.iter().rev() {
                     out.drain(i..i + 2);
                 }
             }
-            out
+            Some(out)
         };
         let gsubrs: Vec<Vec<u8>> = (0..self.gsubrs.len())
             .map(|i| cut(Body::Global(i), self.gsubrs[i]))
-            .collect();
+            .collect::<Option<_>>()?;
         let charstrings: Vec<Vec<u8>> = (0..self.charstrings.len())
             .map(|i| cut(Body::Glyph(i), self.charstrings[i]))
-            .collect();
+            .collect::<Option<_>>()?;
         let charset = self.table(CHARSET)?;
         let encoding = self.table(ENCODING)?;
 
@@ -803,20 +850,37 @@ impl<'a> Cff<'a> {
         let top_at = head.len();
         // The Top DICT INDEX: count 1, offset size 4, two offsets.
         let after_top = top_at + 2 + 1 + 8 + top_len;
+        // Every byte written is charged before it is: an INDEX, a DICT, a
+        // copy of the program's own bytes.
+        let b = &self.budget;
+        let put = |out: &mut Vec<u8>, bytes: &[u8]| -> Option<()> {
+            b.take(bytes.len())?;
+            out.extend_from_slice(bytes);
+            Some(())
+        };
+        let index = |out: &mut Vec<u8>, items: &[Vec<u8>]| -> Option<()> {
+            let len = items
+                .iter()
+                .try_fold(3 + 4 * (items.len() + 1), |a, it| a.checked_add(it.len()))?;
+            b.take(len)?;
+            write_index(out, items);
+            Some(())
+        };
+        b.take(head.len())?;
         let mut tail = Vec::new();
-        tail.extend_from_slice(self.strings);
-        write_index(&mut tail, &gsubrs);
+        put(&mut tail, self.strings)?;
+        index(&mut tail, &gsubrs)?;
         let at = |tail: &Vec<u8>| (after_top + tail.len()) as i64;
         if let Some(c) = charset {
             set.insert(CHARSET, vec![at(&tail)]);
-            tail.extend_from_slice(c);
+            put(&mut tail, c)?;
         }
         if let Some(e) = encoding {
             set.insert(ENCODING, vec![at(&tail)]);
-            tail.extend_from_slice(e);
+            put(&mut tail, e)?;
         }
         set.insert(CHARSTRINGS, vec![at(&tail)]);
-        write_index(&mut tail, &charstrings);
+        index(&mut tail, &charstrings)?;
         // Each Private DICT once, then each Subrs INDEX once (a Private's
         // Subrs offset is relative to it: positive, after them all).
         let sizes: Vec<usize> = self
@@ -839,9 +903,9 @@ impl<'a> Cff<'a> {
                 .iter()
                 .enumerate()
                 .map(|(i, b)| cut(Body::Local(k, i), b))
-                .collect();
+                .collect::<Option<_>>()?;
             let mut bytes = Vec::new();
-            write_index(&mut bytes, &items);
+            index(&mut bytes, &items)?;
             sets_at.push(set_pos);
             set_pos += bytes.len() as i64;
             sets.push(bytes);
@@ -858,10 +922,10 @@ impl<'a> Cff<'a> {
                 return None;
             }
             private_at.push((bytes.len() as i64, here));
-            tail.extend_from_slice(&bytes);
+            put(&mut tail, &bytes)?;
         }
         for bytes in sets {
-            tail.extend_from_slice(&bytes);
+            put(&mut tail, &bytes)?;
         }
         if let Some((select, _)) = &self.fd_select {
             let fds: Vec<Vec<u8>> = self
@@ -873,9 +937,9 @@ impl<'a> Cff<'a> {
                 })
                 .collect();
             set.insert(FDARRAY, vec![at(&tail)]);
-            write_index(&mut tail, &fds);
+            index(&mut tail, &fds)?;
             set.insert(FDSELECT, vec![at(&tail)]);
-            tail.extend_from_slice(select);
+            put(&mut tail, select)?;
         } else if arg(&self.top, PRIVATE).is_some() {
             let (size, off) = private_at[0];
             set.insert(PRIVATE, vec![size, off]);
@@ -885,8 +949,8 @@ impl<'a> Cff<'a> {
             return None;
         }
         let mut out = head;
-        write_index(&mut out, &[top]);
-        out.extend_from_slice(&tail);
+        index(&mut out, &[top])?;
+        put(&mut out, &tail)?;
         Some(out)
     }
 }
@@ -1186,6 +1250,161 @@ mod tests {
         glyphs[125] = glyph(&[PATH, &[14]]);
         let p = program(&glyphs, &[s0, seac]);
         assert_eq!(without_dotsection(&p), None);
+    }
+
+    #[test]
+    fn a_long_real_number_in_shared_private_dicts_is_charged_by_its_length() {
+        // The review's case: Private bytes that are one real number from
+        // any starting byte, read by 256 font dicts one byte apart.
+        let n = 1 << 20;
+        let mut private = vec![30u8; n];
+        private.extend_from_slice(&[0x1f, 20]);
+        let cs = vec![vec![14], vec![139, 139, 21, 239, 139, 5, 12, 0, 14]];
+        let mut head = vec![1, 0, 4, 4];
+        head.extend(idx(&[b"T".to_vec()]));
+        let top_len = 7 + 6 + 6 + 7 + 7;
+        let after_top = head.len() + 2 + 1 + 8 + top_len;
+        let mut tail = idx(&[b"Adobe".to_vec(), b"Identity".to_vec()]);
+        tail.extend(idx(&[]));
+        let charset_at = after_top + tail.len();
+        tail.extend_from_slice(&[0, 0, 1]);
+        let cs_at = after_top + tail.len();
+        tail.extend(idx(&cs));
+        let private_at = after_top + tail.len();
+        tail.extend_from_slice(&private);
+        let fds: Vec<Vec<u8>> = (0..256)
+            .map(|j| {
+                let mut fd = Vec::new();
+                int5(&mut fd, n + 2 - j);
+                int5(&mut fd, private_at + j);
+                fd.push(18);
+                fd
+            })
+            .collect();
+        let fdarray_at = after_top + tail.len();
+        tail.extend(idx(&fds));
+        let fdselect_at = after_top + tail.len();
+        tail.extend_from_slice(&[0, 0, 0]);
+        let mut top = vec![0xf8, 0x1b, 0xf8, 0x1c, 139, 12, 30];
+        int5(&mut top, charset_at);
+        top.push(15);
+        int5(&mut top, cs_at);
+        top.push(17);
+        int5(&mut top, fdarray_at);
+        top.extend_from_slice(&[12, 36]);
+        int5(&mut top, fdselect_at);
+        top.extend_from_slice(&[12, 37]);
+        head.extend(idx(&[top]));
+        head.extend(tail);
+        let t = std::time::Instant::now();
+        assert_eq!(without_dotsection(&head), None);
+        // Refused while parsing the first few DICTs, not after all 256.
+        assert!(cfg!(debug_assertions) || t.elapsed().as_millis() < 50);
+    }
+
+    #[test]
+    fn a_large_font_is_rewritten_within_the_budget() {
+        // 20 000 glyphs of 60 bytes, 2 000 local and 10 000 global
+        // subroutines: a CJK-sized program, rewritten.
+        let path_glyph = |len: usize| {
+            let mut g = vec![139, 139, 21];
+            while g.len() + 4 < len {
+                g.extend_from_slice(&[139, 139, 5]);
+            }
+            g.push(14);
+            g
+        };
+        let mut glyphs: Vec<Vec<u8>> = (0..20_000).map(|_| path_glyph(60)).collect();
+        glyphs[0] = vec![14];
+        glyphs[1] = glyph(&[PATH, &[12, 0], &[14]]);
+        let subrs: Vec<Vec<u8>> = (0..2_000).map(|_| vec![139, 139, 5, 11]).collect();
+        let p = program(&glyphs, &subrs);
+        assert!(without_dotsection(&p).is_some(), "{} bytes", p.len());
+    }
+
+    #[test]
+    fn the_budget_is_spent_before_it_is_exceeded() {
+        let b = Budget(std::cell::Cell::new(100));
+        assert_eq!(b.take(60), Some(()));
+        assert_eq!(b.take(40), Some(()));
+        assert_eq!(b.take(1), None);
+        let b = Budget(std::cell::Cell::new(budget_for(usize::MAX)));
+        assert_eq!(b.take(usize::MAX), Some(()));
+        assert_eq!(b.take(1), None);
+    }
+
+    /// A CID program whose `k` font dicts name Private DICTs at one
+    /// offset with `k` sizes, `step` bytes apart, each a run of `size`
+    /// bytes of two-byte entries (or, `overlap`, starting `step` bytes
+    /// apart and as long).
+    fn private_family(k: usize, size: usize, step: usize, overlap: bool) -> Vec<u8> {
+        let cs = vec![vec![14], vec![139, 139, 21, 239, 139, 5, 12, 0, 14]];
+        let private: Vec<u8> = std::iter::repeat_n([139u8, 6], size / 2)
+            .flatten()
+            .collect();
+        let mut head = vec![1, 0, 4, 4];
+        head.extend(idx(&[b"T".to_vec()]));
+        let top_len = 7 + 6 + 6 + 7 + 7;
+        let after_top = head.len() + 2 + 1 + 8 + top_len;
+        let mut tail = idx(&[b"Adobe".to_vec(), b"Identity".to_vec()]);
+        tail.extend(idx(&[]));
+        let charset_at = after_top + tail.len();
+        tail.extend_from_slice(&[0, 0, 1]);
+        let cs_at = after_top + tail.len();
+        tail.extend(idx(&cs));
+        let private_at = after_top + tail.len();
+        tail.extend_from_slice(&private);
+        let fds: Vec<Vec<u8>> = (0..k)
+            .map(|j| {
+                let mut fd = Vec::new();
+                let (len, at) = if overlap {
+                    (size - k * step, private_at + j * step)
+                } else {
+                    (size - j * step, private_at)
+                };
+                int5(&mut fd, len);
+                int5(&mut fd, at);
+                fd.push(18);
+                fd
+            })
+            .collect();
+        let fdarray_at = after_top + tail.len();
+        tail.extend(idx(&fds));
+        let fdselect_at = after_top + tail.len();
+        tail.extend_from_slice(&[0, 0, 0]);
+        let mut top = vec![0xf8, 0x1b, 0xf8, 0x1c, 139, 12, 30];
+        int5(&mut top, charset_at);
+        top.push(15);
+        int5(&mut top, cs_at);
+        top.push(17);
+        int5(&mut top, fdarray_at);
+        top.extend_from_slice(&[12, 36]);
+        int5(&mut top, fdselect_at);
+        top.extend_from_slice(&[12, 37]);
+        head.extend(idx(&[top]));
+        head.extend(tail);
+        head
+    }
+
+    #[test]
+    fn private_dicts_sharing_bytes_are_charged_each_time_they_are_read() {
+        // One run of bytes read as 256 Private DICTs (sizes 2 bytes apart,
+        // or start 2 bytes apart): each read costs its entries — far more
+        // than the program's size — so the budget refuses the rewrite (the
+        // program is drawn as it is) before the entries are made.
+        for overlap in [false, true] {
+            let p = private_family(256, 64 * 1024, 2, overlap);
+            let t = std::time::Instant::now();
+            assert_eq!(without_dotsection(&p), None, "overlap {overlap}");
+            assert!(cfg!(debug_assertions) || t.elapsed().as_millis() < 500);
+        }
+        // The same run read once or twice is within the budget.
+        for k in [1, 2] {
+            assert!(
+                without_dotsection(&private_family(k, 4096, 2, false)).is_some(),
+                "{k}"
+            );
+        }
     }
 
     #[test]
