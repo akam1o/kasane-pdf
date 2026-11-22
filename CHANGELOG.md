@@ -6,6 +6,16 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Redaction: a page that sets a soft mask with `gs` is redacted when the
+  mask's group draws nothing that meets a rect (its `/BBox` included,
+  and content its `/BBox` or a clip hides): the mask is kept whole, the
+  content painted under it redacted as any other. Such a page was
+  refused whatever the mask ("a soft mask is not handled"). A mask
+  whose group meets a rect, paints a shading or with a pattern, or
+  draws anything that cannot be bounded, is still refused, as is a mask the redaction leaves with nothing
+  painted under it (the output would carry its group unused).
+
 ### Fixed
 - CFF glyphs whose charstrings carry `dotsection` (the Type 1 hint the
   Type 2 format keeps as deprecated, to be ignored — Adobe TN 5177) are
