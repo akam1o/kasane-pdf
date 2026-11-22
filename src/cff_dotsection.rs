@@ -201,6 +201,7 @@ impl Walk<'_> {
                         if !st.stack.is_empty() {
                             return Err(Stop::Abort);
                         }
+                        self.cff.budget.take(8).ok_or(Stop::Abort)?;
                         cuts.push(i);
                     }
                     st.stack.clear();
@@ -420,6 +421,9 @@ type Dict = Vec<Entry>;
 
 /// A DICT as its operators in order, each with its operand bytes.
 fn dict(d: &[u8], b: &Budget) -> Option<Dict> {
+    // Its operand bytes, copied whole into the entries (a real number
+    // runs as long as the DICT), then each operand and entry.
+    b.take(d.len())?;
     let mut out = Vec::new();
     let (mut raw, mut nums) = (Vec::new(), Vec::new());
     let mut i = 0;
@@ -1246,6 +1250,76 @@ mod tests {
         glyphs[125] = glyph(&[PATH, &[14]]);
         let p = program(&glyphs, &[s0, seac]);
         assert_eq!(without_dotsection(&p), None);
+    }
+
+    #[test]
+    fn a_long_real_number_in_shared_private_dicts_is_charged_by_its_length() {
+        // The review's case: Private bytes that are one real number from
+        // any starting byte, read by 256 font dicts one byte apart.
+        let n = 1 << 20;
+        let mut private = vec![30u8; n];
+        private.extend_from_slice(&[0x1f, 20]);
+        let cs = vec![vec![14], vec![139, 139, 21, 239, 139, 5, 12, 0, 14]];
+        let mut head = vec![1, 0, 4, 4];
+        head.extend(idx(&[b"T".to_vec()]));
+        let top_len = 7 + 6 + 6 + 7 + 7;
+        let after_top = head.len() + 2 + 1 + 8 + top_len;
+        let mut tail = idx(&[b"Adobe".to_vec(), b"Identity".to_vec()]);
+        tail.extend(idx(&[]));
+        let charset_at = after_top + tail.len();
+        tail.extend_from_slice(&[0, 0, 1]);
+        let cs_at = after_top + tail.len();
+        tail.extend(idx(&cs));
+        let private_at = after_top + tail.len();
+        tail.extend_from_slice(&private);
+        let fds: Vec<Vec<u8>> = (0..256)
+            .map(|j| {
+                let mut fd = Vec::new();
+                int5(&mut fd, n + 2 - j);
+                int5(&mut fd, private_at + j);
+                fd.push(18);
+                fd
+            })
+            .collect();
+        let fdarray_at = after_top + tail.len();
+        tail.extend(idx(&fds));
+        let fdselect_at = after_top + tail.len();
+        tail.extend_from_slice(&[0, 0, 0]);
+        let mut top = vec![0xf8, 0x1b, 0xf8, 0x1c, 139, 12, 30];
+        int5(&mut top, charset_at);
+        top.push(15);
+        int5(&mut top, cs_at);
+        top.push(17);
+        int5(&mut top, fdarray_at);
+        top.extend_from_slice(&[12, 36]);
+        int5(&mut top, fdselect_at);
+        top.extend_from_slice(&[12, 37]);
+        head.extend(idx(&[top]));
+        head.extend(tail);
+        let t = std::time::Instant::now();
+        assert_eq!(without_dotsection(&head), None);
+        // Refused while parsing the first few DICTs, not after all 256.
+        assert!(cfg!(debug_assertions) || t.elapsed().as_millis() < 50);
+    }
+
+    #[test]
+    fn a_large_font_is_rewritten_within_the_budget() {
+        // 20 000 glyphs of 60 bytes, 2 000 local and 10 000 global
+        // subroutines: a CJK-sized program, rewritten.
+        let path_glyph = |len: usize| {
+            let mut g = vec![139, 139, 21];
+            while g.len() + 4 < len {
+                g.extend_from_slice(&[139, 139, 5]);
+            }
+            g.push(14);
+            g
+        };
+        let mut glyphs: Vec<Vec<u8>> = (0..20_000).map(|_| path_glyph(60)).collect();
+        glyphs[0] = vec![14];
+        glyphs[1] = glyph(&[PATH, &[12, 0], &[14]]);
+        let subrs: Vec<Vec<u8>> = (0..2_000).map(|_| vec![139, 139, 5, 11]).collect();
+        let p = program(&glyphs, &subrs);
+        assert!(without_dotsection(&p).is_some(), "{} bytes", p.len());
     }
 
     #[test]
