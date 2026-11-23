@@ -7,6 +7,14 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- `redact` refused a page holding an unfiltered inline image in an
+  Indexed, CalGray, CalRGB or Lab colour space written in its dictionary,
+  even far from the rects: the length of its samples was taken as
+  unknown, although the dictionary fixes it as for a device space (the
+  content parser already reads it so). Such an image away from the rects
+  is now kept; one meeting a rect is refused as before, and an Indexed
+  image of 16 bits per sample or an image in a named colour space still
+  refuses the page.
 - `redact` refused long documents with Type 3 fonts with
   `max_diag_exec_ops`: the walk that finds which Type 3 glyphs the input
   and the output show counted the operations of every page against the

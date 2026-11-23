@@ -169,7 +169,10 @@ On an edited page: annotations other than links meeting a rect,
 NoZoom, NoRotate or `/FixedPrint` annotations and Text annotations
 (whose icon behaves as NoZoom and NoRotate) not removed, forms nested more
 than 16 deep or cyclic, inline images meeting a rect
-(or whose data length is not fixed by their dictionary), `sh` crossing a rect, unbounded, in a
+(or whose data length is not fixed by their dictionary: filtered, or
+in a colour space named in the resources rather than written in the
+dictionary — a device space or an Indexed, CalGray, CalRGB or Lab
+array), `sh` crossing a rect, unbounded, in a
 form or reached from elsewhere, tiling patterns painting across a rect, in a form, under text
 meeting a rect or reached from elsewhere,
 ExtGState with a soft mask or `/Font`, literal strings holding an

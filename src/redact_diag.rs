@@ -4124,13 +4124,28 @@ fn inline_length_exact(dict: &Dict, data: &[u8]) -> bool {
         return false;
     }
     let mask = matches!(get(b"ImageMask", b"IM"), Some(Object::Bool(true)));
+    // Written in the dictionary itself (§8.9.7: a device space, or an
+    // Indexed, CalGray, CalRGB or Lab array); a named resource is not.
+    let mut indexed = false;
     let comps = if mask {
         1
     } else {
-        match get(b"ColorSpace", b"CS").and_then(|c| c.as_name()) {
-            Some(b"G" | b"DeviceGray") => 1,
-            Some(b"RGB" | b"DeviceRGB") => 3,
-            Some(b"CMYK" | b"DeviceCMYK") => 4,
+        match get(b"ColorSpace", b"CS") {
+            Some(Object::Name(n)) => match n.as_slice() {
+                b"G" | b"DeviceGray" => 1,
+                b"RGB" | b"DeviceRGB" => 3,
+                b"CMYK" | b"DeviceCMYK" => 4,
+                _ => return false,
+            },
+            Some(Object::Array(a)) => match (a.first().and_then(|o| o.as_name()), a.len()) {
+                (Some(b"I" | b"Indexed"), 4) if a[2].as_i64().is_some() => {
+                    indexed = true;
+                    1
+                }
+                (Some(b"CalGray"), 2) => 1,
+                (Some(b"CalRGB" | b"Lab"), 2) => 3,
+                _ => return false,
+            },
             _ => return false,
         }
     };
@@ -4147,7 +4162,7 @@ fn inline_length_exact(dict: &Dict, data: &[u8]) -> bool {
     ) else {
         return false;
     };
-    if !matches!(bpc, 1 | 2 | 4 | 8 | 16) || w <= 0 || h <= 0 {
+    if !matches!(bpc, 1 | 2 | 4 | 8 | 16) || (indexed && bpc == 16) || w <= 0 || h <= 0 {
         return false;
     }
     let row = (w as u128 * comps as u128 * bpc as u128).div_ceil(8);

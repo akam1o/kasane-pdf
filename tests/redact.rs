@@ -1177,6 +1177,63 @@ fn inline_images() {
     assert!(e.contains("inline image"), "{e}");
 }
 
+/// The length of unfiltered samples is fixed by the dictionary for every
+/// colour space written in it — an Indexed, CalGray, CalRGB or Lab array
+/// as well as a device space: such an image away from the rects is kept,
+/// one meeting a rect refused. A named colour space (see
+/// `an_inline_image_of_uncertain_length_is_refused`), an Indexed image
+/// of 16 bits per sample or a malformed array still refuse the page.
+#[test]
+fn inline_images_in_colour_space_arrays() {
+    let at_ = |cm: &str, cs: &str, bpc: u32, data: &str| {
+        one_page(
+            &format!("{SECRET} q {cm} cm BI /W 2 /H 1 /CS {cs} /BPC {bpc} ID {data} EI Q"),
+            "",
+            "",
+            vec![],
+        )
+    };
+    let away = "20 0 0 20 10 10";
+    let inside = "20 0 0 20 60 95";
+    // Two 8-bit indices into a two-colour palette (black, white).
+    let indexed = "[/I /G 1 <00ff>]";
+    for (cs, bpc, data) in [
+        (indexed, 8, "\u{0}\u{1}"),
+        ("[/Indexed /DeviceRGB 1 <000000ffffff>]", 4, "\u{1}"),
+        (
+            "[/CalGray << /WhitePoint [0.9505 1 1.089] >>]",
+            8,
+            "\u{0}\u{0}",
+        ),
+        (
+            "[/CalRGB << /WhitePoint [0.9505 1 1.089] >>]",
+            8,
+            "\u{0}\u{0}\u{0}\u{0}\u{0}\u{0}",
+        ),
+    ] {
+        let r = run(&at_(away, cs, bpc, data), vec![RECT]).unwrap_or_else(|e| panic!("{cs}: {e}"));
+        assert_eq!(r.codes_removed, 10, "{cs}");
+        assert_eq!(at(&r.output, 15, 15), 0, "{cs}: the inline image is kept");
+        let e = unsupported(run(&at_(inside, cs, bpc, data), vec![RECT]));
+        assert!(
+            e.contains("inline image (BI/ID/EI) meeting a rect"),
+            "{cs}: {e}"
+        );
+    }
+    for (cs, bpc, data) in [
+        // 16-bit indices are not a valid Indexed image.
+        (indexed, 16, "\u{0}\u{0}\u{0}\u{1}"),
+        // Not an Indexed array (no lookup).
+        ("[/I /G 1]", 8, "\u{0}\u{1}"),
+    ] {
+        let e = unsupported(run(&at_(away, cs, bpc, data), vec![RECT]));
+        assert!(
+            e.contains("inline image data cannot be addressed"),
+            "{cs} {bpc}: {e}"
+        );
+    }
+}
+
 // Review of forms and shared images (P0/P1, fixed).
 
 /// Nested transforms compose as CTM' = M × CTM (cm and a form's
