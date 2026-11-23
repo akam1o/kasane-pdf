@@ -1681,10 +1681,17 @@ pub(crate) fn regions_edit_session_with<'a>(
                 // the annotation selects (not a widget, which readers may
                 // draw anew): judged in each placement readers give it on
                 // a rotated page (`norotate_placements`).
+                // Its subtype written as a name (a reference to one is
+                // not read alike by every reader), and the page's /Rotate
+                // one MuPDF turns the appearance for (it fits it unturned
+                // otherwise, e.g. for -90).
                 let turned = off_rect
                     && flags & 8 == 0
-                    && !text_icon
-                    && d.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) != Some(b"Widget")
+                    && matches!(
+                        d.get(b"Subtype".as_slice()),
+                        Some(Object::Name(st)) if st.as_slice() != b"Widget" && st.as_slice() != b"Text"
+                    )
+                    && matches!(page.rotate(), 0 | 90 | 180 | 270)
                     && selected_normal_appearance(doc, &d)?;
                 // A watermark's /FixedPrint matrix moves it when printed.
                 if d.contains_key(b"FixedPrint".as_slice()) {

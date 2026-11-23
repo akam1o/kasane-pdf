@@ -465,8 +465,13 @@ Each of these is refused with a typed error, not approximated:
   rotated page); and turned in its own space and fitted to `/Rect`
   turned about its upper left corner, for each page rotation, as MuPDF
   places it (`pdf_annot_transform`). What its `/BBox` hides counts, as
-  for any appearance. Clear of the rects in all of them it is kept;
-  meeting one in any it meets the rect like any annotation.
+  for any appearance; its `/Rect` box counts within its width and
+  height of each corner (so a rect in a gap between two placements can
+  also meet it). Clear of the rects in all of them it is kept; meeting
+  one in any it meets the rect like any annotation. Its `/Subtype` must
+  be written as a name and the page's `/Rotate` be 0, 90, 180 or 270
+  (MuPDF turns the appearance for those only); otherwise it is refused
+  as before.
 - **Text substitutes**: `/ActualText` (any tag), `/Alt` and `/E` in
   named marked-content properties (`/P0 BDC`: the text would stay in
   the resources) or on a marked-content point (`DP`); a structure tree

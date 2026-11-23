@@ -1866,11 +1866,29 @@ fn norotate_placements_of_every_reader_are_judged() {
     }
     let state = "/AS /On /AP << /N << /On 31 0 R >> >>";
     assert!(run(&page(&square(state), "", vec![ap_form.clone()]), vec![far]).is_ok());
-    // A widget stays refused.
+    // A widget stays refused; so does a subtype given by reference (to
+    // a widget or a Text annotation), and a page /Rotate MuPDF does not
+    // turn the appearance for.
     let widget = "<< /Type /Annot /Subtype /Widget /FT /Tx /T (f) /Rect [100 150 160 170] /F 20 \
                   /AP << /N 31 0 R >> >>";
     let e = unsupported(run(&page(widget, "", vec![ap_form.clone()]), vec![far]));
     assert!(e.contains("NoZoom or NoRotate"), "{e}");
+    for name in ["/Widget", "/Text", "/Square"] {
+        let annot = "<< /Type /Annot /Subtype 40 0 R /Rect [100 150 160 170] /F 20 \
+                     /AP << /N 31 0 R >> >>";
+        let extra = vec![ap_form.clone(), (40, name.as_bytes().to_vec())];
+        let e = unsupported(run(&page(annot, "", extra), vec![far]));
+        assert!(e.contains("NoZoom or NoRotate"), "{name}: {e}");
+    }
+    for rotate in ["/Rotate -90", "/Rotate 450"] {
+        let pdf = page(
+            &square("/AP << /N 31 0 R >>"),
+            rotate,
+            vec![ap_form.clone()],
+        );
+        let e = unsupported(run(&pdf, vec![far]));
+        assert!(e.contains("NoZoom or NoRotate"), "{rotate}: {e}");
+    }
     // Only the rollover appearance reaches the rect: what its /BBox hides,
     // 100 below the box (x 100…110, y 50…60 as placed).
     let pdf = page(

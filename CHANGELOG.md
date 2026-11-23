@@ -16,8 +16,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   rects in all of them it is kept; meeting one in any it meets the rect
   like any annotation (a link is removed, a markup annotation with
   `remove_annotations`; otherwise refused). NoZoom annotations, Text
-  annotations' icons, widgets and NoRotate annotations without such an
-  appearance are still refused.
+  annotations' icons, widgets, NoRotate annotations without such an
+  appearance, with a `/Subtype` given by reference or on a page whose
+  `/Rotate` is not 0, 90, 180 or 270 are still refused.
 
 ### Fixed
 - `redact` refused long documents with Type 3 fonts with
