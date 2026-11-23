@@ -926,11 +926,13 @@ fn has_normal_appearance(doc: &Document, d: &Dict) -> Result<bool, Error> {
 /// the page (§12.5.5, Algorithm 8.1: its `/BBox` under its `/Matrix`
 /// fitted to `rect`) — what its `/BBox` hides included — or cannot be
 /// bounded (no `/BBox`, a `/Matrix` that is not one, a transformed
-/// `/BBox` that is degenerate, content that cannot be placed).
+/// `/BBox` that is degenerate, content that cannot be placed). `post`
+/// moves the placed appearance on the page (a NoRotate pivot).
 fn appearance_meets_rects(
     doc: &Document,
     d: &Dict,
     rect: &crate::page::Rect,
+    post: crate::matrix::Matrix,
     probe: &mut DiagWalker,
 ) -> Result<Probe, Error> {
     let Some(ap) = d.get(b"AP".as_slice()) else {
@@ -1011,7 +1013,7 @@ fn appearance_meets_rects(
         // An appearance that cannot be read cannot be bounded: the
         // redaction is refused (as its content would be where it meets a
         // rect).
-        match probe.form_meets_rects(&f, a)? {
+        match probe.form_meets_rects(&f, a.concat(post))? {
             Probe::Clear => {}
             other => return Ok(other),
         }
@@ -1595,6 +1597,16 @@ pub(crate) fn regions_edit_session_with<'a>(
                     == Some(b"Popup")
                     && !has_normal_appearance(doc, &d)?;
                 let off_rect = (flags & (8 | 16) != 0 || text_icon) && !bare_popup;
+                // NoRotate alone, with an appearance stream: it hangs
+                // upright from a corner of /Rect in whichever of the four
+                // orientations the page is shown (/Rotate and a reader's
+                // rotation are multiples of 90°, §7.7.3.3) — placed by
+                // /Rect, then turned about that corner. Every corner and
+                // every quarter turn are taken (readers need not agree on
+                // which corner is the upper left of a rotated page), so
+                // the appearance is judged where it may be drawn.
+                let turned =
+                    off_rect && flags & 8 == 0 && !text_icon && has_normal_appearance(doc, &d)?;
                 // A watermark's /FixedPrint matrix moves it when printed.
                 if d.contains_key(b"FixedPrint".as_slice()) {
                     return Err(Error::Unsupported {
@@ -1633,22 +1645,60 @@ pub(crate) fn regions_edit_session_with<'a>(
                         *b = (b.0 - m, b.1 - m, b.2 + m, b.3 + m);
                     }
                 }
-                let hit = boxes.iter().any(|&(x0, y0, x1, y1)| {
+                // Where the appearance may be drawn: as placed by /Rect,
+                // and for `turned` also turned about each corner of /Rect
+                // by each quarter turn (the /Rect box with it).
+                let (x0, y0, x1, y1) = boxes[0];
+                let mut posts = vec![crate::matrix::Matrix::IDENTITY];
+                if turned {
+                    for (px, py) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+                        for (c, s) in [(0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)] {
+                            let m = crate::matrix::Matrix::new(
+                                c,
+                                s,
+                                -s,
+                                c,
+                                px - c * px + s * py,
+                                py - s * px - c * py,
+                            );
+                            let t = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)]
+                                .map(|(x, y)| m.transform(x, y));
+                            boxes.push((
+                                t.iter().map(|p| p.0).fold(f64::INFINITY, f64::min),
+                                t.iter().map(|p| p.1).fold(f64::INFINITY, f64::min),
+                                t.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max),
+                                t.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max),
+                            ));
+                            posts.push(m);
+                        }
+                    }
+                }
+                let mut hit = boxes.iter().any(|&(x0, y0, x1, y1)| {
                     validated
                         .iter()
                         .any(|v| x0 <= v.urx && x1 >= v.llx && y0 <= v.ury && y1 >= v.lly)
-                }) || (!off_rect
-                    && match appearance_meets_rects(doc, &d, &r, &mut probe)? {
-                        Probe::Clear => false,
-                        Probe::Meets => true,
-                        // Neither kept nor removed on a guess.
-                        Probe::Unbounded(why) => {
-                            return Err(Error::Unsupported {
-                                feature: "redaction with an unbounded annotation appearance",
-                                detail: format!("/Annots[{i}]: {why}"),
-                            })
+                });
+                if !hit && (!off_rect || turned) {
+                    for post in posts {
+                        match appearance_meets_rects(doc, &d, &r, post, &mut probe)? {
+                            Probe::Clear => {}
+                            Probe::Meets => {
+                                hit = true;
+                                break;
+                            }
+                            // Neither kept nor removed on a guess.
+                            Probe::Unbounded(why) => {
+                                return Err(Error::Unsupported {
+                                    feature: "redaction with an unbounded annotation appearance",
+                                    detail: format!("/Annots[{i}]: {why}"),
+                                })
+                            }
                         }
-                    });
+                    }
+                }
+                // Judged where it may be drawn: kept or removed as any
+                // other.
+                let off_rect = off_rect && !turned;
                 let r = match item {
                     Object::Ref(r) => Some(*r),
                     _ => None,

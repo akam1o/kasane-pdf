@@ -166,8 +166,9 @@ secret; the rest must be refused with no file written.
 ## Refused (typed error, no output)
 
 On an edited page: annotations other than links meeting a rect,
-NoZoom, NoRotate or `/FixedPrint` annotations and Text annotations
-(whose icon behaves as NoZoom and NoRotate) not removed, forms nested more
+NoZoom or `/FixedPrint` annotations, NoRotate annotations without an
+appearance stream and Text annotations (whose icon behaves as NoZoom
+and NoRotate) not removed, forms nested more
 than 16 deep or cyclic, inline images meeting a rect
 (or whose data length is not fixed by their dictionary), `sh` crossing a rect, unbounded, in a
 form or reached from elsewhere, tiling patterns painting across a rect, in a form, under text
@@ -448,11 +449,18 @@ Each of these is refused with a typed error, not approximated:
   cannot be edited exactly (a cycle, a direct field, a `/Parent` that is
   not the field above it, a field `/Fields` does not reach), or written
   directly in `/Annots`; signatures, media, file attachments and 3D
-  meeting a rect; NoZoom,
-  NoRotate and `/FixedPrint` annotations and Text annotations not
+  meeting a rect; NoZoom and `/FixedPrint` annotations, NoRotate
+  annotations without an appearance stream and Text annotations not
   removed (a popup without an appearance stream excepted: it draws
   nothing on the page); appearance-less annotations with a caption or a cloudy
-  border.
+  border. A NoRotate annotation with an appearance stream (not a Text
+  annotation, not NoZoom) is judged where it may be drawn: as placed by
+  `/Rect`, and turned by each quarter turn about each corner of `/Rect`
+  (it hangs upright from a corner in whichever orientation the page is
+  shown; readers need not agree which corner is the upper left of a
+  rotated page) — clear of the rects in all of them it is kept, meeting
+  one in any it meets the rect (removed with `remove_annotations`, else
+  refused).
 - **Text substitutes**: `/ActualText` (any tag), `/Alt` and `/E` in
   named marked-content properties (`/P0 BDC`: the text would stay in
   the resources) or on a marked-content point (`DP`); a structure tree

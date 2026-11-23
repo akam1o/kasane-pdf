@@ -6,6 +6,17 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- `redact`: a NoRotate annotation with an appearance stream (not a Text
+  annotation, not NoZoom) no longer refuses its page. It is judged where
+  it may be drawn — as placed by `/Rect`, and turned by each quarter
+  turn about each corner of `/Rect` (what its `/BBox` hides included):
+  clear of the rects in all of them it is kept; meeting one in any it
+  meets the rect (removed with `remove_annotations`, else refused). A
+  NoRotate link turned into a rect is now removed like any link meeting
+  one. NoZoom annotations, Text annotations' icons and NoRotate
+  annotations without an appearance stream are still refused.
+
 ### Fixed
 - `redact` refused long documents with Type 3 fonts with
   `max_diag_exec_ops`: the walk that finds which Type 3 glyphs the input

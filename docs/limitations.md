@@ -386,9 +386,13 @@ are on the [roadmap](architecture.md#roadmap).
   A packet's content inside larger data (part of another stream, under
   another filter than its own) is not recognised.
 - **Annotations drawn away from `/Rect`** (0.10): an annotation with
-  NoZoom or NoRotate kept on an edited page is refused (its appearance
-  may be drawn elsewhere at another zoom), except a popup without an
-  appearance stream, which draws nothing on the page.
+  NoZoom (a Text annotation's icon included) kept on an edited page is
+  refused (its appearance may be drawn elsewhere at another zoom, to no
+  bound), except a popup without an appearance stream, which draws
+  nothing on the page. A NoRotate annotation is refused so only without
+  an appearance stream; with one it is judged in the four orientations
+  about each corner of `/Rect`, and kept only when clear of the rects
+  in all of them.
 - **Uninspected data** (0.8): `redact` reports the data it carries
   without reading it (`Redaction::uninspected`) and refuses it with
   `refuse_uninspected`; that mode is not a proof that no copy of the
