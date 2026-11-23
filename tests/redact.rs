@@ -3839,6 +3839,102 @@ fn a_type3_glyph_also_shown_outside_keeps_its_definition() {
     assert!(contains(&r.output, b"333 777"));
 }
 
+/// The walk that finds which Type 3 glyphs the input and the output
+/// show bounds each page on its own, as the use walk does: a document
+/// of many ordinary pages is not refused for its length. Glyphs other
+/// pages show are still found there (kept), and a page over the bound
+/// still refuses.
+#[test]
+fn type3_usage_is_bounded_per_page() {
+    // `pages` pages after the edited one, page i (from 0) running
+    // `ops(i)` operations and showing `text(i)` in the same Type 3 font.
+    let doc_of =
+        |pages: usize, ops: &dyn Fn(usize) -> usize, text: &dyn Fn(usize) -> &'static str| {
+            let mut objs = vec![
+                (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+                (
+                    2,
+                    format!(
+                        "<< /Type /Pages /Kids [3 0 R {}] /Count {} >>",
+                        (0..pages)
+                            .map(|i| format!("{} 0 R ", 100 + 2 * i))
+                            .collect::<String>(),
+                        pages + 1
+                    )
+                    .into_bytes(),
+                ),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /Font << /T3 60 0 R >> >> /Contents 4 0 R >>"
+                        .to_vec(),
+                ),
+                (4, stream_obj("", b"BT /T3 10 Tf 20 100 Td (AB) Tj ET")),
+                (
+                    60,
+                    b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+                  /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /A 61 0 R /B 62 0 R >> \
+                  /Encoding << /Type /Encoding /Differences [65 /A /B] >> /FirstChar 65 \
+                  /LastChar 66 /Widths [1000 1000] /Resources << >> >>"
+                        .to_vec(),
+                ),
+                (61, stream_obj("", T3_FILL.as_bytes())),
+                (62, stream_obj("", SECRET_GLYPH.as_bytes())),
+            ];
+            for i in 0..pages {
+                let filler = "q Q ".repeat(ops(i) / 2);
+                let n = 100 + 2 * i as u32;
+                objs.push((
+                    n,
+                    format!(
+                        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                     /Resources << /Font << /T3 60 0 R >> >> /Contents {} 0 R >>",
+                        n + 1
+                    )
+                    .into_bytes(),
+                ));
+                let c = format!("{filler}BT /T3 10 Tf 20 100 Td ({}) Tj ET", text(i));
+                objs.push((n + 1, stream_obj("", c.as_bytes())));
+            }
+            build_pdf(&objs)
+        };
+    let limits = kasane_pdf::Limits::default().with_max_diag_exec_ops(1000);
+    let go = |pdf: &[u8]| {
+        let doc = Document::from_bytes(pdf).unwrap();
+        // B (x 30…40) only.
+        redact(
+            &doc,
+            &[(0, vec![(31.0, 99.0, 39.0, 108.0)])],
+            &RedactOptions::new().with_limits(limits.clone()),
+        )
+    };
+    // Six pages of 600 operations: 3,600 in all, each page under 1,000.
+    // B is shown only in the rect: its definition goes.
+    let r = go(&doc_of(5, &|_| 600, &|_| "A")).unwrap();
+    assert_eq!(r.codes_removed, 1);
+    assert!(!contains(&r.output, b"333 777"), "the B CharProc is gone");
+    // B also shown on the last page only: kept, and still shown there.
+    let r = go(&doc_of(5, &|_| 600, &|i| if i == 4 { "AB" } else { "A" })).unwrap();
+    assert_eq!(r.codes_removed, 1);
+    assert!(
+        contains(&r.output, b"333 777"),
+        "B is still shown on page 6"
+    );
+    assert_eq!(page_text(&r.output, 5).replace(['\n', ' '], ""), "AB");
+    // One page over the bound on its own: refused.
+    let e = go(&doc_of(5, &|i| if i == 2 { 1200 } else { 600 }, &|_| "A")).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Error::LimitExceeded {
+                limit: "max_diag_exec_ops",
+                ..
+            }
+        ),
+        "{e}"
+    );
+}
+
 /// A font losing glyphs that something the walk does not read also
 /// uses (a form field's /DR, a tiling pattern) is refused.
 #[test]

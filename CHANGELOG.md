@@ -6,6 +6,13 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `redact` refused long documents with Type 3 fonts with
+  `max_diag_exec_ops`: the walk that finds which Type 3 glyphs the input
+  and the output show counted the operations of every page against the
+  one bound. Each page's operations now count on their own, as in the
+  use walk of the verification; a page over the bound still refuses.
+
 ## [0.13.0] - 2026-11-23
 
 ### Security

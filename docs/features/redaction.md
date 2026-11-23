@@ -340,7 +340,10 @@ information elsewhere is not removed:
   and a removed glyph drawing an image from resources the font
   inherits;
   verification checks that no glyph the output no longer shows is
-  still defined.
+  still defined. Which glyphs are shown is read page by page: the
+  operations of each page (its forms and appearances) count against
+  `max_diag_exec_ops` on their own, as in the use walk of the
+  verification.
 
 Neither report is a guarantee of absence: text inside an embedded font
 program (which glyphs a font has, not where or in what order they were
