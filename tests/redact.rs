@@ -1812,6 +1812,88 @@ fn norotate_annotations_are_judged_in_every_orientation() {
     }
 }
 
+/// MuPDF fits a NoRotate appearance turned in its own space to `/Rect`
+/// turned (`pdf_annot_transform`): with a `/BBox` away from the origin
+/// it draws where no corner turn of the placed appearance lies. That
+/// placement is judged too. The normal appearance must be a stream the
+/// annotation selects; a widget (which readers may draw anew) is still
+/// refused; what only the down or rollover appearance draws counts.
+#[test]
+fn norotate_placements_of_every_reader_are_judged() {
+    let page = |annot: &str, rotate: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut objs = vec![(30, annot.as_bytes().to_vec())];
+        objs.extend(extra);
+        one_page(SECRET, &format!("/Annots [30 0 R] {rotate}"), "", objs)
+    };
+    let form = |bbox: &str, content: &[u8]| {
+        stream_obj(
+            &format!("/Type /XObject /Subtype /Form /BBox [{bbox}]"),
+            content,
+        )
+    };
+    let square = |ap: &str| {
+        format!("<< /Type /Annot /Subtype /Square /Rect [100 150 160 170] /F 20 {ap} >>")
+    };
+    // /BBox [-30 40 30 60], its lower left quarter painted: on a page
+    // turned a quarter, MuPDF 1.28 draws it at x 80…90, y 20…50 (measured
+    // with `mutool draw`), beyond every corner turn of the placed box.
+    let pdf = page(
+        &square("/AP << /N 31 0 R >>"),
+        "/Rotate 90",
+        vec![(31, form("-30 40 30 60", b"0 g -30 40 30 10 re f"))],
+    );
+    let e = unsupported(run(&pdf, vec![(82.0, 25.0, 88.0, 45.0)]));
+    assert!(
+        e.contains("annotation other than a link meeting a rect"),
+        "{e}"
+    );
+    let far = (5.0, 5.0, 40.0, 15.0);
+    assert_eq!(run(&pdf, vec![far]).unwrap().codes_removed, 0);
+    // The normal appearance not selected as a stream: an indirect null,
+    // states without /AS, an /AS naming no state, a state that is null.
+    let ap_form = (31, form("0 0 60 20", b"0 g 0 0 60 20 re f"));
+    for (ap, extra) in [
+        ("/AP << /N 32 0 R >>", vec![(32, b"null".to_vec())]),
+        ("/AP << /N << /On 31 0 R >> >>", vec![ap_form.clone()]),
+        (
+            "/AS /Off /AP << /N << /On 31 0 R >> >>",
+            vec![ap_form.clone()],
+        ),
+        ("/AS /On /AP << /N << /On null >> >>", vec![]),
+    ] {
+        let e = unsupported(run(&page(&square(ap), "", extra), vec![far]));
+        assert!(e.contains("NoZoom or NoRotate"), "{ap}: {e}");
+    }
+    let state = "/AS /On /AP << /N << /On 31 0 R >> >>";
+    assert!(run(&page(&square(state), "", vec![ap_form.clone()]), vec![far]).is_ok());
+    // A widget stays refused.
+    let widget = "<< /Type /Annot /Subtype /Widget /FT /Tx /T (f) /Rect [100 150 160 170] /F 20 \
+                  /AP << /N 31 0 R >> >>";
+    let e = unsupported(run(&page(widget, "", vec![ap_form.clone()]), vec![far]));
+    assert!(e.contains("NoZoom or NoRotate"), "{e}");
+    // Only the rollover appearance reaches the rect: what its /BBox hides,
+    // 100 below the box (x 100…110, y 50…60 as placed).
+    let pdf = page(
+        &square("/AP << /N 31 0 R /R 33 0 R >>"),
+        "",
+        vec![ap_form, (33, form("0 0 60 20", b"0 g 0 -100 10 10 re f"))],
+    );
+    assert!(run(
+        &page(
+            &square("/AP << /N 31 0 R >>"),
+            "",
+            vec![(31, form("0 0 60 20", b"0 g 0 0 60 20 re f"))]
+        ),
+        vec![(101.0, 51.0, 109.0, 59.0)]
+    )
+    .is_ok());
+    let e = unsupported(run(&pdf, vec![(101.0, 51.0, 109.0, 59.0)]));
+    assert!(
+        e.contains("annotation other than a link meeting a rect"),
+        "{e}"
+    );
+}
+
 // Patterns: a shading pattern fill is cut like any fill; a tiling
 // pattern (its cell is content) is refused.
 
