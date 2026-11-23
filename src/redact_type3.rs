@@ -226,7 +226,6 @@ fn usage(doc: &Document, limits: &Limits) -> Result<Usage, Error> {
     let mut u = Usage::default();
     let mut canon = Canon::default();
     let mut keys: HashMap<Vec<u8>, Option<(FontKey, crate::font::Font)>> = HashMap::new();
-    let mut budget: u64 = 0;
     // Page tree nodes hold inherited resources.
     let mut nodes: Vec<IndirectRef> = Vec::new();
     if let Some(Object::Ref(r)) = doc.catalog().get(b"Pages".as_slice()) {
@@ -251,6 +250,10 @@ fn usage(doc: &Document, limits: &Limits) -> Result<Usage, Error> {
         }
     }
     for page in doc.pages() {
+        // Each page within the bound on its own, as the use walk
+        // (`redact_usage`): a long document of ordinary pages is not
+        // refused for its length.
+        let mut budget: u64 = 0;
         let res = page
             .resources()
             .cloned()
