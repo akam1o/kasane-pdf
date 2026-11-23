@@ -50,7 +50,9 @@ property cannot be decided).
   below), shadings crossing a rect (other than the axial ones below),
   tiling patterns crossing a rect (other than the rectangles below),
   names an appearance stream does not resolve in its own resources,
-  annotations whose appearance is not placed by `/Rect`, an annotation
+  annotations whose appearance is not placed by `/Rect` (NoZoom, a Text
+  annotation's icon, a NoRotate widget or NoRotate annotation without a
+  selected appearance stream), an annotation
   appearance whose content cannot be placed (no `/BBox`, a degenerate
   one, content that cannot be bounded), a soft mask set
   by `gs` whose group draws anything that meets a rect (its `/BBox`
@@ -59,7 +61,9 @@ property cannot be decided).
   anything that cannot be bounded.
 - **G** — An annotation meets a rect when its `/Rect` does, or when
   anything one of its appearance streams draws (normal, down or
-  rollover, every state, as placed by §12.5.5) does — what the
+  rollover, every state, as placed by §12.5.5; a NoRotate one also in
+  each placement readers give it on a rotated page: turned by each
+  quarter turn about each corner of `/Rect`, and as MuPDF fits it) does — what the
   appearance's `/BBox` or a clip hides included: it is then removed
   (links; markup annotations and widgets with `remove_annotations`) or
   the redaction refused. A glyph of a font without its program in an

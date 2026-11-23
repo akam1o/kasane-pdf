@@ -921,16 +921,45 @@ fn has_normal_appearance(doc: &Document, d: &Dict) -> Result<bool, Error> {
         .is_some_and(|n| !matches!(n, Object::Null)))
 }
 
+/// Whether annotation `d`'s normal appearance is a stream: `/AP /N`
+/// one, or a dictionary of states whose entry for `/AS` is one (§12.5.5),
+/// references resolved.
+fn selected_normal_appearance(doc: &Document, d: &Dict) -> Result<bool, Error> {
+    let Some(ap) = d.get(b"AP".as_slice()) else {
+        return Ok(false);
+    };
+    let ap = doc.deref(ap)?;
+    let Some(n) = ap.as_dict().and_then(|a| a.get(b"N".as_slice())) else {
+        return Ok(false);
+    };
+    Ok(match doc.deref(n)? {
+        Object::Stream { .. } => true,
+        Object::Dict(states) => {
+            let state = match d.get(b"AS".as_slice()) {
+                Some(s) => doc.deref(s)?,
+                None => return Ok(false),
+            };
+            match state.as_name().and_then(|s| states.get(s)) {
+                Some(v) => matches!(doc.deref(v)?, Object::Stream { .. }),
+                None => false,
+            }
+        }
+        _ => false,
+    })
+}
+
 /// Whether an appearance stream of annotation `d` (normal, down or
 /// rollover, every state) draws anything that meets a rect, as placed on
 /// the page (§12.5.5, Algorithm 8.1: its `/BBox` under its `/Matrix`
 /// fitted to `rect`) — what its `/BBox` hides included — or cannot be
 /// bounded (no `/BBox`, a `/Matrix` that is not one, a transformed
-/// `/BBox` that is degenerate, content that cannot be placed).
+/// `/BBox` that is degenerate, content that cannot be placed). With
+/// `turned` (NoRotate), also every placement `norotate_placements` gives.
 fn appearance_meets_rects(
     doc: &Document,
     d: &Dict,
     rect: &crate::page::Rect,
+    turned: bool,
     probe: &mut DiagWalker,
 ) -> Result<Probe, Error> {
     let Some(ap) = d.get(b"AP".as_slice()) else {
@@ -1011,12 +1040,65 @@ fn appearance_meets_rects(
         // An appearance that cannot be read cannot be bounded: the
         // redaction is refused (as its content would be where it meets a
         // rect).
-        match probe.form_meets_rects(&f, a)? {
-            Probe::Clear => {}
-            other => return Ok(other),
+        let mut placements = vec![a];
+        if turned {
+            placements.extend(norotate_placements(a, (bx0, by0, bx1, by1), rect));
+        }
+        for m in placements {
+            match probe.form_meets_rects(&f, m)? {
+                Probe::Clear => {}
+                other => return Ok(other),
+            }
         }
     }
     Ok(Probe::Clear)
+}
+
+/// The placements of a NoRotate appearance on a rotated page, from its
+/// `/BBox` under its `/Matrix` (`b`) and its placement `a` by `rect`
+/// (Algorithm 8.1). It hangs upright from a corner of `/Rect` in
+/// whichever of the four orientations the page is shown (`/Rotate` and a
+/// reader's rotation are multiples of 90°, §7.7.3.3): `a` turned by each
+/// quarter turn about each corner of `rect` — Poppler and pdf.js pivot
+/// about the upper left one, and readers need not agree which corner
+/// that is on a rotated page. MuPDF instead fits the appearance turned
+/// in its own space to `/Rect` turned about its upper left corner
+/// (`pdf_annot_transform`), which differs where `b` does not start at
+/// the origin: that placement for each page rotation too.
+fn norotate_placements(
+    a: crate::matrix::Matrix,
+    b: (f64, f64, f64, f64),
+    rect: &crate::page::Rect,
+) -> Vec<crate::matrix::Matrix> {
+    use crate::matrix::Matrix;
+    let (x0, y0) = (rect.llx.min(rect.urx), rect.lly.min(rect.ury));
+    let (x1, y1) = (rect.llx.max(rect.urx), rect.lly.max(rect.ury));
+    let quarter = |(c, s): (f64, f64), (px, py): (f64, f64)| {
+        Matrix::new(c, s, -s, c, px - c * px + s * py, py - s * px - c * py)
+    };
+    let turns = [(0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)];
+    let mut out = Vec::with_capacity(15);
+    for p in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+        for t in turns {
+            out.push(a.concat(quarter(t, p)));
+        }
+    }
+    let (w, h) = (b.2 - b.0, b.3 - b.1);
+    for (t, turn) in turns.into_iter().zip([
+        Matrix::new(0.0, h / w, -w / h, 0.0, w, 0.0),
+        Matrix::new(-1.0, 0.0, 0.0, -1.0, w, h),
+        Matrix::new(0.0, -h / w, w / h, 0.0, 0.0, h),
+    ]) {
+        let q = quarter(t, (x0, y1));
+        let c = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)].map(|(x, y)| q.transform(x, y));
+        let r0 = c.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+        let r1 = c.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+        let r2 = c.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+        let r3 = c.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+        let (sx, sy) = ((r2 - r0) / w, (r3 - r1) / h);
+        out.push(turn.concat(Matrix::new(sx, 0.0, 0.0, sy, r0 - b.0 * sx, r1 - b.1 * sy)));
+    }
+    out
 }
 
 /// The page-space bounds of an annotation's geometry keys (`/L`,
@@ -1595,6 +1677,22 @@ pub(crate) fn regions_edit_session_with<'a>(
                     == Some(b"Popup")
                     && !has_normal_appearance(doc, &d)?;
                 let off_rect = (flags & (8 | 16) != 0 || text_icon) && !bare_popup;
+                // NoRotate alone, drawn from a normal appearance stream
+                // the annotation selects (not a widget, which readers may
+                // draw anew): judged in each placement readers give it on
+                // a rotated page (`norotate_placements`).
+                // Its subtype written as a name (a reference to one is
+                // not read alike by every reader), and the page's /Rotate
+                // one MuPDF turns the appearance for (it fits it unturned
+                // otherwise, e.g. for -90).
+                let turned = off_rect
+                    && flags & 8 == 0
+                    && matches!(
+                        d.get(b"Subtype".as_slice()),
+                        Some(Object::Name(st)) if st.as_slice() != b"Widget" && st.as_slice() != b"Text"
+                    )
+                    && matches!(page.rotate(), 0 | 90 | 180 | 270)
+                    && selected_normal_appearance(doc, &d)?;
                 // A watermark's /FixedPrint matrix moves it when printed.
                 if d.contains_key(b"FixedPrint".as_slice()) {
                     return Err(Error::Unsupported {
@@ -1633,12 +1731,25 @@ pub(crate) fn regions_edit_session_with<'a>(
                         *b = (b.0 - m, b.1 - m, b.2 + m, b.3 + m);
                     }
                 }
+                // The /Rect box, and for `turned` the box turned by each
+                // quarter turn about each corner (the appearance is probed
+                // in the same placements, `norotate_placements`).
+                if turned {
+                    let (x0, y0, x1, y1) = boxes[0];
+                    for (px, py) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+                        for (dx, dy) in [(x1 - x0, y1 - y0), (y1 - y0, x1 - x0)] {
+                            // A quarter or half turn about (px, py) keeps
+                            // the box within its width and height of it.
+                            boxes.push((px - dx, py - dy, px + dx, py + dy));
+                        }
+                    }
+                }
                 let hit = boxes.iter().any(|&(x0, y0, x1, y1)| {
                     validated
                         .iter()
                         .any(|v| x0 <= v.urx && x1 >= v.llx && y0 <= v.ury && y1 >= v.lly)
-                }) || (!off_rect
-                    && match appearance_meets_rects(doc, &d, &r, &mut probe)? {
+                }) || ((!off_rect || turned)
+                    && match appearance_meets_rects(doc, &d, &r, turned, &mut probe)? {
                         Probe::Clear => false,
                         Probe::Meets => true,
                         // Neither kept nor removed on a guess.
@@ -1649,6 +1760,9 @@ pub(crate) fn regions_edit_session_with<'a>(
                             })
                         }
                     });
+                // Judged where it may be drawn: kept or removed as any
+                // other.
+                let off_rect = off_rect && !turned;
                 let r = match item {
                     Object::Ref(r) => Some(*r),
                     _ => None,

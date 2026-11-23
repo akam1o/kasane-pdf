@@ -166,7 +166,8 @@ secret; the rest must be refused with no file written.
 ## Refused (typed error, no output)
 
 On an edited page: annotations other than links meeting a rect,
-NoZoom, NoRotate or `/FixedPrint` annotations and Text annotations
+NoZoom or `/FixedPrint` annotations, NoRotate widgets and NoRotate
+annotations without a selected appearance stream, and Text annotations
 (whose icon behaves as NoZoom and NoRotate) not removed, forms nested more
 than 16 deep or cyclic, inline images meeting a rect
 (or whose data length is not fixed by their dictionary), `sh` crossing a rect, unbounded, in a
@@ -448,11 +449,29 @@ Each of these is refused with a typed error, not approximated:
   cannot be edited exactly (a cycle, a direct field, a `/Parent` that is
   not the field above it, a field `/Fields` does not reach), or written
   directly in `/Annots`; signatures, media, file attachments and 3D
-  meeting a rect; NoZoom,
-  NoRotate and `/FixedPrint` annotations and Text annotations not
+  meeting a rect; NoZoom and `/FixedPrint` annotations, NoRotate
+  widgets and NoRotate annotations without a selected appearance
+  stream, and Text annotations not
   removed (a popup without an appearance stream excepted: it draws
   nothing on the page); appearance-less annotations with a caption or a cloudy
-  border.
+  border. A NoRotate annotation drawn from a normal appearance stream
+  it selects (`/AP /N` a stream, or the state `/AS` names; not a
+  widget, which readers may draw anew, not a Text annotation, not
+  NoZoom) is judged in the placements readers give it on a rotated
+  page: as placed by `/Rect`; turned by each quarter turn about each
+  corner of `/Rect` (it hangs upright from a corner in whichever
+  orientation the page is shown — Poppler and pdf.js pivot about the
+  upper left one, and readers need not agree which corner that is on a
+  rotated page); and turned in its own space and fitted to `/Rect`
+  turned about its upper left corner, for each page rotation, as MuPDF
+  places it (`pdf_annot_transform`). What its `/BBox` hides counts, as
+  for any appearance; its `/Rect` box counts within its width and
+  height of each corner (so a rect in a gap between two placements can
+  also meet it). Clear of the rects in all of them it is kept; meeting
+  one in any it meets the rect like any annotation. Its `/Subtype` must
+  be written as a name and the page's `/Rotate` be 0, 90, 180 or 270
+  (MuPDF turns the appearance for those only); otherwise it is refused
+  as before.
 - **Text substitutes**: `/ActualText` (any tag), `/Alt` and `/E` in
   named marked-content properties (`/P0 BDC`: the text would stay in
   the resources) or on a marked-content point (`DP`); a structure tree

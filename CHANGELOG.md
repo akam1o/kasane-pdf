@@ -6,6 +6,20 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- `redact`: a NoRotate annotation drawn from a normal appearance stream
+  it selects (not a widget, not a Text annotation, not NoZoom) no longer
+  refuses its page. It is judged in the placements readers give it on a
+  rotated page — as placed by `/Rect`, turned by each quarter turn about
+  each corner of `/Rect` (Poppler, pdf.js), and fitted turned to `/Rect`
+  turned as MuPDF does — what its `/BBox` hides included: clear of the
+  rects in all of them it is kept; meeting one in any it meets the rect
+  like any annotation (a link is removed, a markup annotation with
+  `remove_annotations`; otherwise refused). NoZoom annotations, Text
+  annotations' icons, widgets, NoRotate annotations without such an
+  appearance, with a `/Subtype` given by reference or on a page whose
+  `/Rotate` is not 0, 90, 180 or 270 are still refused.
+
 ### Fixed
 - `redact` refused long documents with Type 3 fonts with
   `max_diag_exec_ops`: the walk that finds which Type 3 glyphs the input
