@@ -74,11 +74,11 @@ expectation. The table changes only with
 `scripts/advisory-history.py update-expected`, which prints every cell
 that changes and refuses a failure as an expectation.
 
-Last measured on 2026-11-23, with 0.13.0 from crates.io (macOS arm64; the nightly runs it on Linux).
+Last measured on 2026-11-25, with 0.13.0 from crates.io (macOS arm64; the nightly runs it on Linux).
 Every affected range matches its advisory; `removed` or `refused` before
 the fix in a few rows means that variant was handled by that version
 (it is kept as a guard for later ones). `candidate` is the build of the
-commit (0.13.0 and later); `v0.13.0` is the published package. The
+commit (0.13.1 and later); `v0.13.0` is the published package. The
 `4q38` inputs are refused by every version; before 0.11.0 the refusal's
 message quoted what the input holds (GHSA-4q38-qhh6-c256).
 
@@ -149,12 +149,18 @@ message quoted what the input holds (GHSA-4q38-qhh6-c256).
 | `f228-crlf` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused |
 | `f228-shown` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused |
 | `fm2j-dash` | SLOW | SLOW | SLOW | SLOW | SLOW | SLOW | SLOW | SLOW | SLOW | SLOW | refused | refused | refused | refused | refused | refused | refused | refused | refused | refused | refused | refused |
+| `fqfv-form-comment` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused |
+| `fqfv-form-under` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused |
+| `fqfv-page-bdc` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused |
+| `fqfv-page-dash` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused |
+| `fqfv-page-under` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused |
+| `fqfv-type3` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused |
 | `fqgr-cff-notdef` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed |
 | `fqgr-cidfonttype2-bearing` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed |
 | `fqgr-truetype-bearing` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed |
 | `fqgr-type1-absent-name` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed |
-| `frr2-tm-cancelled-by-cm` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | refused | refused | refused | refused | refused | refused | refused | refused | refused |
 | `frr2-tm` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | refused | refused | refused | refused | refused | refused | refused | refused | refused |
+| `frr2-tm-cancelled-by-cm` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | refused | refused | refused | refused | refused | refused | refused | refused | refused |
 | `pp5g-down-appearance` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed |
 | `pp5g-link` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed |
 | `pp5g-matrix` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed |
@@ -163,6 +169,6 @@ message quoted what the input holds (GHSA-4q38-qhh6-c256).
 | `pp5g-widget` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed |
 | `vph3-objstm` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused |
 | `x455-image` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | removed | removed | removed | removed | removed | removed | removed | removed | removed |
-| `x455-text-invisible-clip` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | removed | removed | removed | removed | removed | removed | removed |
 | `x455-text` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | removed | removed | removed | removed | removed | removed | removed | removed | removed |
+| `x455-text-invisible-clip` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | removed | removed | removed | removed | removed | removed | removed |
 | `xpph-literal` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused |

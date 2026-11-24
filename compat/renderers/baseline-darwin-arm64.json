@@ -353,6 +353,30 @@
    "outcome": "refused",
    "renderers": {}
   },
+  "adv:fqfv-form-comment": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:fqfv-form-under": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:fqfv-page-bdc": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:fqfv-page-dash": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:fqfv-page-under": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:fqfv-type3": {
+   "outcome": "refused",
+   "renderers": {}
+  },
   "adv:fqgr-cff-notdef": {
    "outcome": "ok",
    "renderers": {
@@ -1198,36 +1222,8 @@
    "renderers": {}
   },
   "vr:inline-image-outside": {
-   "outcome": "ok",
-   "renderers": {
-    "mupdf": {
-     "antialias": 0,
-     "changed": 0,
-     "font_substitution": 0,
-     "ink_left_not_judged": 0,
-     "public_lost": false,
-     "secret_extracted": false,
-     "snap": 0
-    },
-    "pdfjs": {
-     "antialias": 0,
-     "changed": 0,
-     "font_substitution": 0,
-     "ink_left_not_judged": 0,
-     "public_lost": false,
-     "secret_extracted": false,
-     "snap": 0
-    },
-    "poppler": {
-     "antialias": 0,
-     "changed": 0,
-     "font_substitution": 0,
-     "ink_left_not_judged": 0,
-     "public_lost": false,
-     "secret_extracted": false,
-     "snap": 0
-    }
-   }
+   "outcome": "refused",
+   "renderers": {}
   },
   "vr:invisible-ocr-text": {
    "outcome": "ok",
@@ -1820,7 +1816,7 @@
  },
  "dpi": 72,
  "platform": "darwin-arm64",
- "reason": "adds the seven GHSA-pp5g-3qw2-h45w and GHSA-844w-wgrm-c4q8 advisory inputs (six removed, one refused), measured locally on macOS 26 arm64 (Poppler 26.10.0, MuPDF 1.28.6, pdf.js 6.5.438): the 113 earlier cases unchanged, each new one checked case by case",
+ "reason": "adds the seven GHSA-pp5g-3qw2-h45w and GHSA-844w-wgrm-c4q8 advisory inputs (six removed, one refused), measured locally on macOS 26 arm64 (Poppler 26.10.0, MuPDF 1.28.6, pdf.js 6.5.438): the 113 earlier cases unchanged, each new one checked case by case; vr:inline-image-outside is now refused (0.13.1: an inline image refuses its page wherever it lies), so no renderer judges an output; adds the six GHSA-fqfv-cg5v-p7mr advisory inputs (all refused, so no renderer judges an output; the same entry on every platform)",
  "schema_version": 1,
  "tools": {
   "mupdf": "1.28.6",

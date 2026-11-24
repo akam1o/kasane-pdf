@@ -1931,3 +1931,124 @@ fn ghsa_844w_shading_geometry_under_a_clip_away() {
     let r = run(&pdf, &RedactOptions::new()).unwrap();
     assert!(!text(&r.output).contains("SECRETTEXT"));
 }
+
+// ---- GHSA-fqfv-cg5v-p7mr (< 0.13.1): inline images pdf.js reads differently --
+
+/// An inline image away from the rect whose data, or what follows it,
+/// pdf.js reads differently: it searches for `EI` with a heuristic, ends
+/// the image inside its data (samples spelling `EI` and operators) or
+/// runs past the real end to a later `EI` (in a string, a comment), and
+/// draws what lies between as content — here a black square and a word
+/// inside the rect. Page content, a Form XObject the page draws, and a
+/// Type 3 glyph's procedure: every case is refused.
+#[test]
+fn ghsa_fqfv_inline_images_are_refused() {
+    let hidden = "0 g 70 70 60 60 re f BT /F1 12 Tf 72 100 Td (INLINESECRET) Tj ET";
+    // Samples spelling `EI` and the hidden content, then a second image
+    // whose `ID` takes the rest up to the real `EI`.
+    // (`Q` first: the hidden content is drawn in the page's space.)
+    let under = format!("\nEI Q {hidden} q BI /W 1 /H 1 /CS /G /BPC 8 ID \u{0}");
+    let under_img = format!(
+        "q 20 0 0 20 10 10 cm BI /W {} /H 1 /CS /G /BPC 8 ID {under} EI Q",
+        under.len()
+    );
+    // The real `EI` followed by what pdf.js does not take for an operator
+    // (`[`, `<<`, `%`), the hidden content after a later `EI` in a
+    // string or a comment.
+    let over_dash = format!(
+        "q 20 0 0 20 10 10 cm BI /W 4 /H 1 /CS /G /BPC 8 ID \u{0}\u{0}\u{0}\u{0} EI\n[] 0 d Q \
+         BT /F1 2 Tf 150 185 Td (EI Q {hidden} \\() Tj ET"
+    );
+    let over_bdc = format!(
+        "q 20 0 0 20 10 10 cm BI /W 4 /H 1 /CS /G /BPC 8 ID \u{0}\u{0}\u{0}\u{0} EI\n\
+         /P <</MCID 0>> BDC EMC Q BT /F1 2 Tf 150 185 Td (EI Q {hidden} \\() Tj ET"
+    );
+    let over_comment = format!(
+        "q 20 0 0 20 10 10 cm BI /W 4 /H 1 /CS /G /BPC 8 ID \u{0}\u{0}\u{0}\u{0} EI% EI Q {hidden} q\nQ"
+    );
+    let form = |content: &str| {
+        stream_obj(
+            "/Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+             /Resources << /Font << /F1 20 0 R >> >>",
+            content.as_bytes(),
+        )
+    };
+    let refused = |name: &str, pdf: &[u8]| match run(pdf, &RedactOptions::new()) {
+        Ok(r) => panic!("{name}: kept ({} bytes)", r.output.len()),
+        Err(Error::Unsupported { feature, detail }) => {
+            assert!(
+                detail.contains("inline image"),
+                "{name}: {feature}: {detail}"
+            )
+        }
+        Err(e) => panic!("{name}: {e}"),
+    };
+    let mut cases: Vec<(&str, Vec<u8>)> = Vec::new();
+    for (name, c) in [
+        ("page-under", &under_img),
+        ("page-dash", &over_dash),
+        ("page-bdc", &over_bdc),
+    ] {
+        cases.push((
+            name,
+            page(format!("{KEPT} {c}").as_bytes(), "", "", "", vec![]),
+        ));
+    }
+    for (name, c) in [("form-under", &under_img), ("form-comment", &over_comment)] {
+        cases.push((
+            name,
+            page(
+                format!("{KEPT} /Fm Do").as_bytes(),
+                "/XObject << /Fm 30 0 R >>",
+                "",
+                "",
+                vec![(30, form(c))],
+            ),
+        ));
+    }
+    // A Type 3 glyph shown at (10, 10), 20 pt: its procedure's image
+    // samples spell `EI` and a square at 70…130 (glyph units of 0.02 pt).
+    let t3_under = "\nEI Q 3000 3000 3000 3000 re f q BI /W 1 /H 1 /CS /G /BPC 8 ID \u{0}";
+    let cp = format!(
+        "1000 0 d0 0 0 500 500 re f q 100 0 0 100 0 0 cm BI /W {} /H 1 /CS /G /BPC 8 ID {t3_under} EI Q",
+        t3_under.len()
+    );
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 20 0 R /T3 31 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (
+            4,
+            stream_obj(
+                "",
+                format!("{KEPT} BT /T3 20 Tf 10 10 Td (a) Tj ET").as_bytes(),
+            ),
+        ),
+        (
+            31,
+            b"<< /Type /Font /Subtype /Type3 /FontMatrix [0.001 0 0 0.001 0 0] \
+              /FontBBox [0 0 1000 1000] /CharProcs << /a 32 0 R >> /Encoding << \
+              /Type /Encoding /Differences [97 /a] >> /FirstChar 97 /LastChar 97 \
+              /Widths [1000] /Resources << >> >>"
+                .to_vec(),
+        ),
+        (32, stream_obj("", cp.as_bytes())),
+    ];
+    objs.extend(font_objs());
+    cases.push(("type3", build_pdf(&objs)));
+    for (name, pdf) in &cases {
+        refused(name, pdf);
+        dump(
+            &format!("fqfv-{name}"),
+            "GHSA-fqfv-cg5v-p7mr",
+            REDACT_ARGS,
+            "safe-text:INLINESECRET",
+            pdf,
+        );
+    }
+}
