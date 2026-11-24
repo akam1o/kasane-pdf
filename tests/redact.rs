@@ -1156,8 +1156,8 @@ fn nested_forms_and_form_images_are_redacted() {
     );
 }
 
-/// An inline image away from the rects is kept as it is; one meeting a
-/// rect is refused (its samples are not edited).
+/// An inline image refuses redaction on its page, away from the rects
+/// or meeting one: readers do not all end its data alike.
 #[test]
 fn inline_images() {
     let outside = one_page(
@@ -1166,9 +1166,8 @@ fn inline_images() {
         "",
         vec![],
     );
-    let r = run(&outside, vec![RECT]).unwrap();
-    assert_eq!(r.codes_removed, 10);
-    assert_eq!(at(&r.output, 20, 20), 0, "the inline image is kept");
+    let e = unsupported(run(&outside, vec![RECT]));
+    assert!(e.contains("inline image"), "{e}");
     let inside = one_page(
         &format!("{SECRET} q 20 0 0 20 60 95 cm BI /W 1 /H 1 /CS /G /BPC 8 ID \u{0} EI Q"),
         "",
@@ -4366,7 +4365,8 @@ fn a_removed_image_glyph_takes_its_image_with_it() {
     assert!(contains(&r.output, &samples_of(101)));
 }
 
-/// An inline-image glyph goes with its CharProc; a CharProc drawing a
+/// A CharProc drawing an inline image is refused (readers do not all
+/// end its data alike); a CharProc drawing a
 /// form, or an image from resources the font inherits, is refused; an
 /// image a removed glyph drew that the page also draws stays, reported.
 #[test]
@@ -4378,9 +4378,8 @@ fn image_glyph_edge_cases() {
         "",
         vec![],
     );
-    let r = run(&inline, vec![(32.0, 101.0, 38.0, 107.0)]).unwrap();
-    assert_eq!(r.codes_removed, 1);
-    assert!(!contains(&r.output, b"/W 2 /H 1"));
+    let e = unsupported(run(&inline, vec![(32.0, 101.0, 38.0, 107.0)]));
+    assert!(e.contains("inline image"), "{e}");
     let form = type3_page(
         "BT /T3 10 Tf 20 100 Td (AB) Tj ET",
         T3_FILL,

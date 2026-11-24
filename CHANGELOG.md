@@ -27,6 +27,27 @@ versions follow [Semantic Versioning](https://semver.org/).
   one bound. Each page's operations now count on their own, as in the
   use walk of the verification; a page over the bound still refuses.
 
+## [0.13.1] - 2026-11-25
+
+A security fix for `redact`; no public API change. Release notes:
+`docs/releases/v0.13.1.md`.
+
+### Security
+- Inline images read differently by pdf.js (GHSA-fqfv-cg5v-p7mr, Low):
+  `redact` kept an inline image (`BI … ID … EI`) away from the rects,
+  reading its data as ending where its dictionary says or where the
+  parser finds `EI`. pdf.js searches for `EI` with a heuristic: it can
+  end the image inside its data, or run past the real end and resume at
+  a later `EI` (in a string, a comment), and draw the bytes in between
+  as content `redact` never read — content drawn inside a rect stayed in
+  the output while the redaction reported verified (0.6.0–0.13.0, with
+  the default options: in page content and in a Form XObject the page
+  draws; from 0.7.0 also in a Type 3 glyph's procedure, which was
+  accepted without any check; MuPDF reads some of these constructions the
+  same way). `redact` now refuses a page whose content, forms or the
+  appearances of the annotations it keeps draw an inline image, or that
+  shows a Type 3 glyph drawing one, wherever the image lies.
+
 ## [0.13.0] - 2026-11-23
 
 ### Security
@@ -1564,7 +1585,8 @@ are possible between minor versions and are recorded here.
   1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
   `docs/third-party.md`).
 
-[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/akam1o/kasane-pdf/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/akam1o/kasane-pdf/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.12.0
 [0.11.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.11.0

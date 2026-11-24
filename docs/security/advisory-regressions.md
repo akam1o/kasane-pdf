@@ -74,95 +74,101 @@ expectation. The table changes only with
 `scripts/advisory-history.py update-expected`, which prints every cell
 that changes and refuses a failure as an expectation.
 
-Last measured on 2026-11-23, with 0.13.0 from crates.io (macOS arm64; the nightly runs it on Linux).
+Last measured on 2026-11-25, with 0.13.1 from crates.io (macOS arm64; the nightly runs it on Linux).
 Every affected range matches its advisory; `removed` or `refused` before
 the fix in a few rows means that variant was handled by that version
 (it is kept as a guard for later ones). `candidate` is the build of the
-commit (0.13.0 and later); `v0.13.0` is the published package. The
+commit (later than 0.13.1); `v0.13.1` is the published package. The
 `4q38` inputs are refused by every version; before 0.11.0 the refusal's
 message quoted what the input holds (GHSA-4q38-qhh6-c256).
 
-| input | v0.1.0 | v0.1.1 | v0.2.0 | v0.2.1 | v0.2.2 | v0.3.0 | v0.3.1 | v0.4.0 | v0.4.1 | v0.5.0 | v0.5.1 | v0.5.2 | v0.6.0 | v0.6.1 | v0.6.2 | v0.7.0 | v0.8.0 | v0.10.0 | v0.11.0 | v0.12.0 | v0.13.0 | candidate |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `2337-cm` | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed |
-| `2337-form` | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed |
-| `2r8v-default-rgb-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `2r8v-devicen-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `2r8v-palette-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `2r8v-palette-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `2r8v-palette-string-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | removed | removed | removed | removed | removed | refused | refused | refused | refused | refused |
-| `2r8v-tint-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `2r8v-tint-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `2r8v-transfer-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `3f9j-after-endcmap` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
-| `3f9j-bfchar` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
-| `3f9j-length` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
-| `3f9j-order` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed | removed |
-| `4q38-glyph` | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused |
-| `4q38-operator` | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused |
-| `4q38-signature` | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused |
-| `6pgh-goto-A-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-goto-A-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-goto-A-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-goto-AA-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-goto-AA-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-goto-AA-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-javascript-A-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-javascript-A-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-javascript-A-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-javascript-AA-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-javascript-AA-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-javascript-AA-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-launch-A-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-launch-A-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-launch-A-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-launch-AA-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-launch-AA-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-launch-AA-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-named-A-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-named-A-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-named-A-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-named-AA-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-named-AA-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-named-AA-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-shared-kept` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | kept | kept | kept | kept | kept | kept | kept | kept | kept | kept |
-| `6pgh-uri-A-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-uri-A-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-uri-A-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-uri-AA-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-uri-AA-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `6pgh-uri-AA-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `844w-mesh` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused |
-| `92wc-link-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `92wc-markup-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `92wc-markup-hide` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `92wc-markup-nm-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `92wc-markup-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `92wc-markup-rc-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `92wc-markup-subj-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `92wc-markup-t-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused |
-| `cjhc-contents-attachment` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
-| `cjhc-contents-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
-| `cjhc-contents-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
-| `cjhc-link-appearance` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
-| `cjhc-stamp-appearance` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | refused | refused | refused | refused | refused | refused | refused |
-| `f228-crlf` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused |
-| `f228-shown` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused |
-| `fm2j-dash` | SLOW | SLOW | SLOW | SLOW | SLOW | SLOW | SLOW | SLOW | SLOW | SLOW | refused | refused | refused | refused | refused | refused | refused | refused | refused | refused | refused | refused |
-| `fqgr-cff-notdef` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed |
-| `fqgr-cidfonttype2-bearing` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed |
-| `fqgr-truetype-bearing` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed |
-| `fqgr-type1-absent-name` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed |
-| `frr2-tm-cancelled-by-cm` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | refused | refused | refused | refused | refused | refused | refused | refused | refused |
-| `frr2-tm` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | refused | refused | refused | refused | refused | refused | refused | refused | refused |
-| `pp5g-down-appearance` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed |
-| `pp5g-link` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed |
-| `pp5g-matrix` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed |
-| `pp5g-nested-form` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed |
-| `pp5g-square` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed |
-| `pp5g-widget` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed |
-| `vph3-objstm` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused |
-| `x455-image` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | removed | removed | removed | removed | removed | removed | removed | removed | removed |
-| `x455-text-invisible-clip` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | removed | removed | removed | removed | removed | removed | removed |
-| `x455-text` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | removed | removed | removed | removed | removed | removed | removed | removed | removed |
-| `xpph-literal` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused |
+| input | v0.1.0 | v0.1.1 | v0.2.0 | v0.2.1 | v0.2.2 | v0.3.0 | v0.3.1 | v0.4.0 | v0.4.1 | v0.5.0 | v0.5.1 | v0.5.2 | v0.6.0 | v0.6.1 | v0.6.2 | v0.7.0 | v0.8.0 | v0.10.0 | v0.11.0 | v0.12.0 | v0.13.0 | v0.13.1 | candidate |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `2337-cm` | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed |
+| `2337-form` | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed |
+| `2r8v-default-rgb-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `2r8v-devicen-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `2r8v-palette-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `2r8v-palette-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `2r8v-palette-string-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | removed | removed | removed | removed | removed | refused | refused | refused | refused | refused | refused |
+| `2r8v-tint-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `2r8v-tint-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `2r8v-transfer-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `3f9j-after-endcmap` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused |
+| `3f9j-bfchar` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused |
+| `3f9j-length` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused |
+| `3f9j-order` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed | removed | removed |
+| `4q38-glyph` | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
+| `4q38-operator` | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
+| `4q38-signature` | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused |
+| `6pgh-goto-A-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-goto-A-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-goto-A-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-goto-AA-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-goto-AA-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-goto-AA-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-javascript-A-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-javascript-A-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-javascript-A-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-javascript-AA-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-javascript-AA-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-javascript-AA-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-launch-A-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-launch-A-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-launch-A-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-launch-AA-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-launch-AA-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-launch-AA-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-named-A-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-named-A-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-named-A-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-named-AA-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-named-AA-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-named-AA-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-shared-kept` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | kept | kept | kept | kept | kept | kept | kept | kept | kept | kept | kept |
+| `6pgh-uri-A-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-uri-A-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-uri-A-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-uri-AA-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-uri-AA-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `6pgh-uri-AA-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `844w-mesh` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused | refused |
+| `92wc-link-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `92wc-markup-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `92wc-markup-hide` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `92wc-markup-nm-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `92wc-markup-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `92wc-markup-rc-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `92wc-markup-subj-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `92wc-markup-t-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | refused | refused | refused | refused | refused | refused |
+| `cjhc-contents-attachment` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused |
+| `cjhc-contents-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused |
+| `cjhc-contents-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused |
+| `cjhc-link-appearance` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused |
+| `cjhc-stamp-appearance` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | refused | refused | refused | refused | refused | refused | refused | refused |
+| `f228-crlf` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused | refused |
+| `f228-shown` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused | refused |
+| `fm2j-dash` | SLOW | SLOW | SLOW | SLOW | SLOW | SLOW | SLOW | SLOW | SLOW | SLOW | refused | refused | refused | refused | refused | refused | refused | refused | refused | refused | refused | refused | refused |
+| `fqfv-form-comment` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused |
+| `fqfv-form-under` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused |
+| `fqfv-page-bdc` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused |
+| `fqfv-page-dash` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused |
+| `fqfv-page-under` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused |
+| `fqfv-type3` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused |
+| `fqgr-cff-notdef` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed | removed |
+| `fqgr-cidfonttype2-bearing` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed | removed |
+| `fqgr-truetype-bearing` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed | removed |
+| `fqgr-type1-absent-name` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed | removed | removed | removed |
+| `frr2-tm-cancelled-by-cm` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | refused | refused | refused | refused | refused | refused | refused | refused | refused | refused |
+| `frr2-tm` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | refused | refused | refused | refused | refused | refused | refused | refused | refused | refused |
+| `pp5g-down-appearance` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed |
+| `pp5g-link` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed |
+| `pp5g-matrix` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed |
+| `pp5g-nested-form` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed |
+| `pp5g-square` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed |
+| `pp5g-widget` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | removed | removed | removed |
+| `vph3-objstm` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused | refused |
+| `x455-image` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed |
+| `x455-text-invisible-clip` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | refused | refused | refused | removed | removed | removed | removed | removed | removed | removed | removed |
+| `x455-text` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | removed | removed | removed | removed | removed | removed | removed | removed | removed | removed |
+| `xpph-literal` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | refused | refused | refused | refused | refused | refused | refused | refused |

@@ -2305,41 +2305,22 @@ impl<'a> DiagWalker<'a> {
                     self.tiling_kept_now();
                     false
                 } => {}
-            O::InlineImage { dict, data }
-                if self.redaction_mode
-                    && !self.uncertain_state
-                    && inline_length_exact(dict, data) =>
-            {
-                // Paints the unit square under the CTM.
-                let m = self.gs.ctm;
-                let c = [
-                    m.transform(0.0, 0.0),
-                    m.transform(1.0, 0.0),
-                    m.transform(0.0, 1.0),
-                    m.transform(1.0, 1.0),
-                ];
-                let b = (
-                    c.iter().map(|p| p.0).fold(f64::INFINITY, f64::min),
-                    c.iter().map(|p| p.1).fold(f64::INFINITY, f64::min),
-                    c.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max),
-                    c.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max),
-                );
-                if !b.0.is_finite() || !self.visible_hits(&b).is_empty() {
-                    self.push_blocker(Blocker {
-                        site: Some(self.site()),
-                        what: "inline image (BI/ID/EI) meeting a rect".into(),
-                        detail: "inline image samples are not edited".into(),
-                    })?;
-                }
-            }
             O::InlineImage { .. } => {
                 // Paints the unit square under the CTM like an image
                 // XObject, but carries no resource name the removal
                 // family could address — report it as a blocker.
+                // Redaction keeps none, wherever it lies: readers do not all
+                // end its data where the parser does, and what one reads as
+                // content there was never read here.
                 self.push_blocker(Blocker {
                     site: Some(self.site()),
                     what: "inline image (BI/ID/EI)".into(),
-                    detail: "inline image data cannot be addressed by name for removal".into(),
+                    detail: if self.redaction_mode {
+                        "readers do not all find the end of inline image data where it is read here"
+                            .into()
+                    } else {
+                        "inline image data cannot be addressed by name for removal".into()
+                    },
                 })?;
             }
             // Redaction: a shading fills the clip; under a clip that is
@@ -2720,6 +2701,11 @@ impl<'a> DiagWalker<'a> {
                                     (Some(n), Some(fb)) => self.tiling_period_shown(&n, &fb)?,
                                     _ => false,
                                 };
+                            // A kept cell is not walked: what it draws (an
+                            // inline image's data read another way by a
+                            // reader included) is clipped to its /BBox and
+                            // shown in every period, so a whole period
+                            // outside shows all of it there.
                             if periodic {
                                 if let Some(n) = &self.gs.tiling[0] {
                                     self.tiling_kept.insert(n.clone());
@@ -4109,51 +4095,6 @@ fn hits_for(b: &(f64, f64, f64, f64), rects: &[Rect]) -> Vec<usize> {
         .collect()
 }
 
-/// Whether an inline image's data is exactly the samples its
-/// dictionary declares — unfiltered, a device colour space named
-/// directly (or an image mask), and `ID … EI` holding precisely
-/// `H × ceil(W × components × BPC / 8)` bytes. Only then is the
-/// parser's `EI` boundary certain; otherwise sample bytes that spell
-/// `EI` could have ended the image early and the rest been read as
-/// operators.
-fn inline_length_exact(dict: &Dict, data: &[u8]) -> bool {
-    let get = |full: &[u8], abbr: &[u8]| dict.get(abbr).or_else(|| dict.get(full));
-    if get(b"Filter", b"F").is_some_and(|f| !matches!(f, Object::Null))
-        && !matches!(get(b"Filter", b"F"), Some(Object::Array(a)) if a.is_empty())
-    {
-        return false;
-    }
-    let mask = matches!(get(b"ImageMask", b"IM"), Some(Object::Bool(true)));
-    let comps = if mask {
-        1
-    } else {
-        match get(b"ColorSpace", b"CS").and_then(|c| c.as_name()) {
-            Some(b"G" | b"DeviceGray") => 1,
-            Some(b"RGB" | b"DeviceRGB") => 3,
-            Some(b"CMYK" | b"DeviceCMYK") => 4,
-            _ => return false,
-        }
-    };
-    let bpc = if mask {
-        1
-    } else {
-        get(b"BitsPerComponent", b"BPC")
-            .and_then(|b| b.as_i64())
-            .unwrap_or(0)
-    };
-    let (Some(w), Some(h)) = (
-        get(b"Width", b"W").and_then(|v| v.as_i64()),
-        get(b"Height", b"H").and_then(|v| v.as_i64()),
-    ) else {
-        return false;
-    };
-    if !matches!(bpc, 1 | 2 | 4 | 8 | 16) || w <= 0 || h <= 0 {
-        return false;
-    }
-    let row = (w as u128 * comps as u128 * bpc as u128).div_ceil(8);
-    row.checked_mul(h as u128) == Some(data.len() as u128)
-}
-
 /// Whether `n` names a pattern-type colour space entry in the current
 /// resources — pattern fills paint outside the path bounds.
 fn is_pattern_name(doc: &Document, resources: &Object, n: &[u8]) -> Result<bool, Error> {
@@ -4376,7 +4317,15 @@ pub(crate) fn type3_glyph_bounds(
                 }
             }
             O::ClosePath | O::Clip | O::ClipEvenOdd => {}
-            O::InlineImage { .. } | O::Do(_) => {
+            // An inline image's end is not read alike by every reader
+            // (see `DiagWalker::run`): its glyph is not evaluated.
+            O::InlineImage { .. } => {
+                return Err(Error::Unsupported {
+                    feature: "Type 3 glyph",
+                    detail: "its CharProc draws an inline image".into(),
+                })
+            }
+            O::Do(_) => {
                 if let O::Do(n) = op {
                     images.push(n.clone());
                 }
