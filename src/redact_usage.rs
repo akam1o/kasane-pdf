@@ -354,11 +354,55 @@ impl OcDefault {
     }
 
     /// Whether content under `oc` (an `/OC` value, a `BDC /OC`
-    /// properties entry) is shown by default: only a group, by
-    /// reference, that the default configuration turns on and no
-    /// automatic state names. A membership dictionary or
-    /// anything else counts as hidden.
+    /// properties entry) is shown by default: a group, by reference,
+    /// that the default configuration turns on and no automatic state
+    /// names; or a membership dictionary (§8.11.2.2) without `/VE`
+    /// whose `/P` is `/AnyOn` (the default) or `/AllOn` and whose
+    /// groups (one or more) are each shown so — every reader shows it,
+    /// whichever of its groups it reads. Anything else counts as
+    /// hidden (readers do not agree on `/AnyOff`, `/AllOff` or `/VE`).
     fn shows(&self, doc: &Document, oc: &Object) -> Result<bool, Error> {
+        let Object::Ref(r) = oc else { return Ok(false) };
+        let g = doc.resolve(*r)?;
+        let ty = g
+            .as_dict()
+            .and_then(|d| d.get(b"Type".as_slice()))
+            .and_then(|t| t.as_name());
+        if ty == Some(b"OCMD".as_slice()) {
+            let d = g.as_dict().expect("typed above");
+            if d.get(b"VE".as_slice()).is_some() {
+                return Ok(false);
+            }
+            let p = match d.get(b"P".as_slice()) {
+                Some(p) => doc.deref(p)?.as_name().map(|n| n.to_vec()),
+                None => Some(b"AnyOn".to_vec()),
+            };
+            if !matches!(p.as_deref(), Some(b"AnyOn" | b"AllOn")) {
+                return Ok(false);
+            }
+            let groups = match d.get(b"OCGs".as_slice()) {
+                Some(Object::Ref(g)) => vec![Object::Ref(*g)],
+                Some(o) => match doc.deref(o)? {
+                    Object::Array(a) => a,
+                    _ => return Ok(false),
+                },
+                None => return Ok(false),
+            };
+            if groups.is_empty() {
+                return Ok(false);
+            }
+            for g in &groups {
+                if !self.shows_group(doc, g)? {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+        self.shows_group(doc, oc)
+    }
+
+    /// [`Self::shows`] for a group: `oc` a reference to an `/OCG`.
+    fn shows_group(&self, doc: &Document, oc: &Object) -> Result<bool, Error> {
         let Object::Ref(r) = oc else { return Ok(false) };
         let g = doc.resolve(*r)?;
         let is_group = g
@@ -2306,6 +2350,51 @@ mod tests {
             for b in [Bound::Over, Bound::Complete] {
                 let u = usage(&doc, &|_| true, b, &Limits::default()).unwrap();
                 assert!(u.used.contains_key(&IndirectRef::new(8, 0)), "{d} {b:?}");
+            }
+        }
+    }
+
+    /// A membership dictionary is drawn over the output only where
+    /// Poppler, MuPDF and pdf.js all show it: `/AnyOn` (the default) or
+    /// `/AllOn` with every group on. They disagree on `/AllOn` with a
+    /// group off, `/AnyOff` and `/VE`; `/AllOff` and an empty `/OCGs`
+    /// are not counted either. (Group 20 is on, 21 off.)
+    #[test]
+    fn optional_content_membership() {
+        let make = |m: &str| {
+            pdf(&[
+                (1, b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [20 0 R 21 0 R] /D << /OFF [21 0 R] >> >> >>".to_vec()),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+                (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /Resources << /Properties << /L 22 0 R >> /XObject << /Im 9 0 R >> >> >>".to_vec()),
+                (4, stream("", b"/OC /L BDC q 20 0 0 20 10 10 cm /Im Do Q EMC")),
+                (8, stream("", b"\x01\x02\x03\xf1\xf2\xf3")),
+                (9, stream("/Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace [/Indexed /DeviceRGB 1 8 0 R]", b"\x00")),
+                (20, b"<< /Type /OCG /Name (on) >>".to_vec()),
+                (21, b"<< /Type /OCG /Name (off) >>".to_vec()),
+                (22, format!("<< /Type /OCMD {m} >>").into_bytes()),
+            ])
+        };
+        for (m, drawn) in [
+            ("/OCGs 20 0 R", true),
+            ("/OCGs [20 0 R]", true),
+            ("/OCGs [20 0 R] /P /AllOn", true),
+            ("/OCGs [20 0 R 20 0 R] /P /AnyOn", true),
+            ("/OCGs 21 0 R", false),
+            ("/OCGs [20 0 R 21 0 R] /P /AllOn", false),
+            ("/OCGs [20 0 R 21 0 R] /P /AnyOn", false),
+            ("/OCGs [20 0 R 21 0 R] /P /AnyOff", false),
+            ("/OCGs [21 0 R] /P /AllOff", false),
+            ("/OCGs [20 0 R] /VE [/Not 21 0 R]", false),
+            ("/OCGs []", false),
+            ("/P /AnyOn", false),
+            ("/OCGs [20 0 R] /P /Other", false),
+        ] {
+            let doc = Document::from_bytes(&make(m)).unwrap();
+            let u = usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();
+            assert_eq!(u.used.contains_key(&IndirectRef::new(8, 0)), drawn, "{m}");
+            for b in [Bound::Over, Bound::Complete] {
+                let u = usage(&doc, &|_| true, b, &Limits::default()).unwrap();
+                assert!(u.used.contains_key(&IndirectRef::new(8, 0)), "{m} {b:?}");
             }
         }
     }
