@@ -50,8 +50,9 @@ request cannot weaken `gate` and report it green (docs/testing.md, *CI
 gates*). Force pushes and deletion are off. Administrators are not
 included (`enforce_admins` off): the maintainer can still push to
 `main` — used only to fast-forward it to a security release's commit
-whose full gate is green (B.3), and to land a change the guard refuses
-by design (a fork's change to the CI). Everything else, a normal
+whose full gate is green (B.3, until 0.13.0; from 0.13.1 R reaches
+`main` through the disclosure pull request instead), and to land a
+change the guard refuses by design (a fork's change to the CI). Everything else, a normal
 release's preparation included (A.2), is merged through the pull request
 (`gh pr merge <n> --merge`), never by a local merge pushed to `main`.
 
@@ -397,12 +398,19 @@ gh run watch <the pr.yml run of R>                  # ~6 minutes
 gh run watch <the codeql-release.yml run of R>      # ~5 minutes, in parallel
 scripts/release-check.py R --local-results <DIR of R> --disclosure S --disclosure-results <DIR of S> \
     --history-results <DIR of S's security-history run>
-                                                    # full gate and CodeQL green on R; R and S verified; main fast-forwards
-git push origin R:main
+                                                    # full gate and CodeQL green on R; R and S verified; main is an ancestor of R
 git tag -a v<version> -m "kasane-pdf <version>" R && git push origin v<version>
 git worktree add --detach /tmp/rel v<version>
 cd /tmp/rel && ./scripts/fetch-cjk-assets.sh --check && cargo publish
 ```
+
+The tag and the crate are R, the commit the gate verified. `main` is
+not pushed to: R reaches it with S, through the disclosure pull request
+(B.4, step 5), merged with `gh pr merge --merge` — R stays an ancestor
+of `main`, never rewritten. A release cut from an older tag (0.13.1) is
+not an ancestor of `main`: its fix is applied on a branch from `main`
+with S's files (a new commit, not R), and that pull request is what
+reaches `main`.
 
 ### B.4 Disclosure — once the crate can be downloaded
 
@@ -428,9 +436,12 @@ cd /tmp/rel && ./scripts/fetch-cjk-assets.sh --check && cargo publish
    on crates.io from the tag's commit and S's history covers it, every
    input with its state. Without this, main's advisory history fails
    with `version_not_covered:<version>`.
-5. S: rebase it on `main` if needed (the diff stays tests/docs/
-   CHANGELOG/history/renderer baselines), open a pull request, merge it
-   when green. The tag stays on R.
+5. S: open a pull request from S to `main` and merge it with
+   `gh pr merge --merge` when green. Never rebase S: it descends from R,
+   and a rebase would rewrite R, the tagged and published commit. If
+   `main` moved, merge `main` into the branch (or let the pull request's
+   merge commit do it). The tag stays on R. (A release from an older
+   tag: see *Patch releases from a release branch*.)
 
 ### B.5 After publishing
 
@@ -605,9 +616,18 @@ its own commit:
   — it checks against the baselines committed on that branch (those of
   the version being patched), not `main`'s.
 
+Such a branch carries the older tag's `compat/advisories/history.json`,
+which does not list the versions published after that tag. Before the
+tag, bring every published version into it (its entry and its expected
+states, from a `main` history run): the nightly on the tag judges the
+tag's own history in `release-tag` mode and fails with
+`version_not_covered` otherwise. `release-check.py` checks it (0.13.1,
+cut from v0.13.0 before this check existed, lacks 0.13.0: its tag's
+nightly fails that job; its advisory history is judged on `main`).
+
 `main` is not moved to it: `scripts/release-check.py <sha>
 --require-nightly --no-main --local-results DIR` checks the gate without
-the fast-forward condition. A tag older than `scripts/release-verify.py`
+the ancestor condition. A tag older than `scripts/release-verify.py`
 has no verifier of its own to run: its local gate is recorded by hand,
 and `--legacy-local` (instead of `--local-results`) says so. The tag goes on the release branch's verified commit; the
 branch's CHANGELOG section and release notes are then brought to `main`
@@ -621,7 +641,7 @@ undone, when users must be told, and when it needs a person.
 | case | go on? | retry | cannot be undone | tell users | by hand |
 | --- | --- | --- | --- | --- | --- |
 | **The full gate fails on R or M** (before the tag) | stop | an infrastructure failure (runner lost, download error): `gh run rerun <id> --failed`, then `release-check.py` again | in B, R's code is public — the advisories stay drafts | no (nothing released) | a real failure — in A: a fix by pull request, its merge the new M, the gate again (A.3); in B: fix, new R (and S), B.2 again, push the new R; keep the window short |
-| **CI fails on `main` after the push** (same SHA, gate was green on the branch) | the gate already passed on R: a flake is re-run; a real difference (a cache, a runner change) is investigated | `gh run rerun --failed` | `main` = R stays (no force push) | only if the version is published and the failure is real | seen before the tag: stop and fix as above; tagged but not published: the version is skipped if the source must change (the tag stays); published: fix forward in a patch release |
+| **CI fails on `main` after the merge** (the gate was green on R) | the gate already passed on R: a flake is re-run; a real difference (a cache, a runner change, the merge with `main`) is investigated | `gh run rerun --failed` | the merge stays (no force push) | only if the version is published and the failure is real | seen before the tag: stop and fix as above; tagged but not published: the version is skipped if the source must change (the tag stays); published: fix forward in a patch release |
 | **The tag push fails** | stop until it is pushed | the push (network, permission) — after an unclear failure, `git ls-remote origin refs/tags/v<version>` first | — | no | a tag pushed on the wrong commit is never moved or deleted: that version is skipped (not published), the next patch version is released, the CHANGELOG says the skipped one was never released |
 | **`cargo publish` fails** | stop the disclosure | before upload (a check, network, token): fix outside the source, publish again from the same tag | the tag (pushed), and the version if the upload went through | no | check `https://crates.io/api/v1/crates/kasane-pdf/<version>` before retrying (an upload may have succeeded and only the wait failed); a fix in the source means a new version (the tag stays, the version is skipped) |
 | **The crate cannot be downloaded** (index or CDN delay, crates.io incident) | wait; advisories stay drafts | `cargo info`, the sparse index (`https://index.crates.io/ka/sa/kasane-pdf`) and the `.crate` URL, every few minutes | the version is published | no, while the details are private | beyond an hour: status.crates.io, then the crates.io team |
