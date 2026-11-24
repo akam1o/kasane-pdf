@@ -582,6 +582,15 @@ class Geometry(unittest.TestCase):
         # No frame: no conversion (the plain mode never calls it).
         self.assertIsNone(ev.FRAME)
 
+    def test_pgm_samples_that_look_like_white_space(self):
+        raster = bytes([9, 10, 13, 32, 0, 255])
+        self.assertEqual(ev.parse_pgm(b"P5\n3 2\n255\n" + raster), (3, 2, raster))
+        self.assertEqual(ev.parse_pgm(b"P5 # c\n3\t2 255 " + raster), (3, 2, raster))
+        for bad in (b"P5\n3 2\n255\n" + raster[:-1], b"P6\n3 2\n255\n" + raster,
+                    b"P5\n3 2\n65535\n" + raster, b"P5\n3"):
+            with self.assertRaises(ValueError):
+                ev.parse_pgm(bad)
+
     def test_reports_with_markers_are_refused_downstream(self):
         proj = load("redact_results_projection", "redact-results-projection.py")
         import io

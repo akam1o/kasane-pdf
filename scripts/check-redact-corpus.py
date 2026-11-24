@@ -88,13 +88,13 @@ def runs(path):
     if not isinstance(doc, dict) or not isinstance(doc.get("results"), list):
         raise Invalid(f"{os.path.basename(path)}: no results list")
     if any(k in doc for k in ("pages", "geometry", "ink")):
-        raise Invalid(f"{os.path.basename(path)}: a --pages spread report (page 1 only is compared)")
+        raise Invalid(f"{os.path.basename(path)}: a --pages spread, --geometry any or --ink report (page 1, plain geometry only is compared)")
     out = {}
     for r in doc["results"]:
         if not isinstance(r, dict) or not all(isinstance(r.get(k), str) for k in ("id", "kind", "outcome")):
             raise Invalid(f"{os.path.basename(path)}: a run without id, kind or outcome")
         if "page" in r:
-            raise Invalid(f"{os.path.basename(path)}: a --pages spread report (page 1 only is compared)")
+            raise Invalid(f"{os.path.basename(path)}: a --pages spread, --geometry any or --ink report (page 1, plain geometry only is compared)")
         k = (r["id"], r["kind"])
         if k in out:
             raise Invalid(f"{os.path.basename(path)}: a run twice")
