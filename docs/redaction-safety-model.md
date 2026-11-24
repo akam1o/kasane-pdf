@@ -417,9 +417,12 @@ A failed check is an error and no output.
   (intent `/View`) turns it on (`/OFF` after `/ON`), no automatic state
   names it and its `/Usage` turns nothing off; a membership dictionary
   is on only without `/VE`, with `/P /AnyOn` (the default) or `/AllOn`
-  and one or more groups, each on — where Poppler, MuPDF and pdf.js all
-  show it (they disagree on `/AllOn` with a group off, `/AnyOff` and
-  `/VE`); otherwise it counts as off; an appearance without `/Resources`
+  over an array, and one or more groups, each on, each listed in
+  `/OCProperties /OCGs` (which has no `/Configs`) and none with an
+  `/Intent` other than `/View` — a case Poppler, MuPDF and pdf.js all
+  show (they disagree on `/AllOn` with a group off or over a single
+  reference, `/AnyOff`, `/VE`, unlisted and design groups); otherwise
+  it counts as off; an appearance without `/Resources`
   resolving nothing (pdf.js). The other bounds resolve such an
   appearance in the page's resources (mutool, Poppler). Non-interference uses a third bound on both
   sides — everything a reader may draw (every appearance and state,

@@ -295,6 +295,10 @@ struct OcDefault {
     view_intent: bool,
     on: HashSet<IndirectRef>,
     off: HashSet<IndirectRef>,
+    /// The groups `/OCProperties /OCGs` lists, when it has no
+    /// `/Configs` (a reader may pick another configuration from them):
+    /// the only groups a membership dictionary may count as shown by.
+    registered: HashSet<IndirectRef>,
 }
 
 impl OcDefault {
@@ -304,11 +308,24 @@ impl OcDefault {
             view_intent: true,
             on: HashSet::new(),
             off: HashSet::new(),
+            registered: HashSet::new(),
         };
         let Some(p) = doc.catalog().get(b"OCProperties".as_slice()) else {
             return Ok(oc);
         };
         let p = doc.deref(p)?;
+        if let Some(p) = p
+            .as_dict()
+            .filter(|p| p.get(b"Configs".as_slice()).is_none())
+        {
+            if let Some(g) = p.get(b"OCGs".as_slice()) {
+                for x in doc.deref(g)?.as_array().unwrap_or(&[]) {
+                    if let Object::Ref(r) = x {
+                        oc.registered.insert(*r);
+                    }
+                }
+            }
+        }
         let Some(d) = p.as_dict().and_then(|p| p.get(b"D".as_slice())) else {
             return Ok(oc);
         };
@@ -357,10 +374,14 @@ impl OcDefault {
     /// properties entry) is shown by default: a group, by reference,
     /// that the default configuration turns on and no automatic state
     /// names; or a membership dictionary (§8.11.2.2) without `/VE`
-    /// whose `/P` is `/AnyOn` (the default) or `/AllOn` and whose
-    /// groups (one or more) are each shown so — every reader shows it,
-    /// whichever of its groups it reads. Anything else counts as
-    /// hidden (readers do not agree on `/AnyOff`, `/AllOff` or `/VE`).
+    /// whose `/P` is `/AnyOn` (the default) — or `/AllOn` with an array
+    /// of groups (MuPDF hides `/AllOn` over a single reference) — and
+    /// whose groups, one or more, are each shown so, listed in
+    /// `/OCProperties /OCGs` (Poppler hides a group it does not list),
+    /// with no `/Configs` to choose from and no group `/Intent` other
+    /// than `/View` (MuPDF hides a design group): every reader shows it,
+    /// whichever of its groups it reads. Anything else counts as hidden
+    /// (readers do not agree on `/AnyOff`, `/AllOff` or `/VE`).
     fn shows(&self, doc: &Document, oc: &Object) -> Result<bool, Error> {
         let Object::Ref(r) = oc else { return Ok(false) };
         let g = doc.resolve(*r)?;
@@ -377,22 +398,32 @@ impl OcDefault {
                 Some(p) => doc.deref(p)?.as_name().map(|n| n.to_vec()),
                 None => Some(b"AnyOn".to_vec()),
             };
-            if !matches!(p.as_deref(), Some(b"AnyOn" | b"AllOn")) {
-                return Ok(false);
-            }
-            let groups = match d.get(b"OCGs".as_slice()) {
-                Some(Object::Ref(g)) => vec![Object::Ref(*g)],
-                Some(o) => match doc.deref(o)? {
-                    Object::Array(a) => a,
-                    _ => return Ok(false),
-                },
-                None => return Ok(false),
+            let groups = match (p.as_deref(), d.get(b"OCGs".as_slice())) {
+                (Some(b"AnyOn"), Some(Object::Ref(g))) => vec![Object::Ref(*g)],
+                (Some(b"AnyOn" | b"AllOn"), Some(Object::Array(a))) => a.clone(),
+                _ => return Ok(false),
             };
             if groups.is_empty() {
                 return Ok(false);
             }
             for g in &groups {
-                if !self.shows_group(doc, g)? {
+                let Object::Ref(r) = g else { return Ok(false) };
+                if !self.registered.contains(r) || !self.shows_group(doc, g)? {
+                    return Ok(false);
+                }
+                // A group for an intent other than viewing.
+                let intent = doc
+                    .resolve(*r)?
+                    .as_dict()
+                    .and_then(|d| d.get(b"Intent".as_slice()))
+                    .cloned();
+                let view = match intent.map(|i| doc.deref(&i)).transpose()? {
+                    None => true,
+                    Some(Object::Name(n)) => n.as_slice() == b"View",
+                    Some(Object::Array(a)) => a.len() == 1 && a[0].as_name() == Some(b"View"),
+                    Some(_) => false,
+                };
+                if !view {
                     return Ok(false);
                 }
             }
@@ -2361,9 +2392,9 @@ mod tests {
     /// are not counted either. (Group 20 is on, 21 off.)
     #[test]
     fn optional_content_membership() {
-        let make = |m: &str| {
+        let make = |m: &str, configs: &str| {
             pdf(&[
-                (1, b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [20 0 R 21 0 R] /D << /OFF [21 0 R] >> >> >>".to_vec()),
+                (1, format!("<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [20 0 R 21 0 R 24 0 R] {configs} /D << /OFF [21 0 R] >> >> >>").into_bytes()),
                 (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
                 (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /Resources << /Properties << /L 22 0 R >> /XObject << /Im 9 0 R >> >> >>".to_vec()),
                 (4, stream("", b"/OC /L BDC q 20 0 0 20 10 10 cm /Im Do Q EMC")),
@@ -2372,6 +2403,9 @@ mod tests {
                 (20, b"<< /Type /OCG /Name (on) >>".to_vec()),
                 (21, b"<< /Type /OCG /Name (off) >>".to_vec()),
                 (22, format!("<< /Type /OCMD {m} >>").into_bytes()),
+                (23, b"<< /Type /OCG /Name (unlisted) >>".to_vec()),
+                (24, b"<< /Type /OCG /Name (design) /Intent /Design >>".to_vec()),
+                (25, b"[20 0 R]".to_vec()),
             ])
         };
         for (m, drawn) in [
@@ -2388,8 +2422,16 @@ mod tests {
             ("/OCGs []", false),
             ("/P /AnyOn", false),
             ("/OCGs [20 0 R] /P /Other", false),
+            // MuPDF hides /AllOn over a single reference; Poppler a group
+            // /OCProperties does not list; MuPDF a design group.
+            ("/OCGs 20 0 R /P /AllOn", false),
+            ("/OCGs [23 0 R]", false),
+            ("/OCGs 23 0 R", false),
+            ("/OCGs [24 0 R]", false),
+            // An array by reference is not read as one.
+            ("/OCGs 25 0 R", false),
         ] {
-            let doc = Document::from_bytes(&make(m)).unwrap();
+            let doc = Document::from_bytes(&make(m, "")).unwrap();
             let u = usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();
             assert_eq!(u.used.contains_key(&IndirectRef::new(8, 0)), drawn, "{m}");
             for b in [Bound::Over, Bound::Complete] {
@@ -2397,6 +2439,10 @@ mod tests {
                 assert!(u.used.contains_key(&IndirectRef::new(8, 0)), "{m} {b:?}");
             }
         }
+        // With configurations to choose from, a reader may not use /D.
+        let doc = Document::from_bytes(&make("/OCGs 20 0 R", "/Configs [<< >>]")).unwrap();
+        let u = usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();
+        assert!(!u.used.contains_key(&IndirectRef::new(8, 0)));
     }
 
     /// A button's read-only flag inherited from farther up than the
