@@ -552,6 +552,51 @@ def real():
     return 1 if failed else 0
 
 
+class Geometry(unittest.TestCase):
+    """`--geometry any`: a rect of the displayed frame (the crop box
+    turned by /Rotate, lower-left origin) back in default user space.
+    The forward map is the one Poppler (`-cropbox`), MuPDF and pdftoppm
+    were checked against on synthetic pages of every rotation."""
+
+    def forward(self, frame, u, v):
+        rot, (x0, y0, x1, y1) = frame
+        return {0: (u - x0, v - y0), 90: (v - y0, x1 - u),
+                180: (x1 - u, y1 - v), 270: (y1 - v, u - x0)}[rot]
+
+    def test_to_user(self):
+        box = [20.0, 30.0, 300.0, 400.0]
+        # A user-space rect (130, 210)–(150, 220) as each rotation shows it.
+        shown = {0: (110, 180, 130, 190), 90: (180, 150, 190, 170),
+                 180: (150, 180, 170, 190), 270: (180, 110, 190, 130)}
+        for rot, rect in shown.items():
+            self.assertEqual(ev.to_user(rect, (rot, box)), (130, 210, 150, 220), rot)
+        # Round trip, a negative MediaBox origin's crop box included.
+        for box in ([20.0, 30.0, 300.0, 400.0], [-50.0, -40.0, 10.0, 60.0], [0.0, 0.0, 612.0, 792.0]):
+            for rot in (0, 90, 180, 270):
+                f = (rot, box)
+                r = ev.to_user((3.0, 4.0, 15.0, 9.0), f)
+                pts = [self.forward(f, r[0], r[1]), self.forward(f, r[2], r[3])]
+                got = (min(p[0] for p in pts), min(p[1] for p in pts),
+                       max(p[0] for p in pts), max(p[1] for p in pts))
+                self.assertEqual(tuple(round(v, 9) for v in got), (3.0, 4.0, 15.0, 9.0), (rot, box))
+        # No frame: no conversion (the plain mode never calls it).
+        self.assertIsNone(ev.FRAME)
+
+    def test_reports_with_markers_are_refused_downstream(self):
+        proj = load("redact_results_projection", "redact-results-projection.py")
+        import io
+        import contextlib
+        import tempfile
+        for marker in ("geometry", "ink"):
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump({"results": [], marker: True}, f)
+            sys.argv = ["x", f.name, f.name + ".out"]
+            with self.assertRaises(SystemExit) as e, contextlib.redirect_stderr(io.StringIO()):
+                proj.main()
+            self.assertNotEqual(e.exception.code, 0, marker)
+            os.unlink(f.name)
+
+
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--real"]:
         sys.exit(real())

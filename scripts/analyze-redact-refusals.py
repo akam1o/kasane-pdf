@@ -19,8 +19,14 @@ import collections
 import json
 import os
 import re
+import importlib.util
 import subprocess
 import sys
+
+_spec = importlib.util.spec_from_file_location(
+    "eval_redact_corpus", os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval-redact-corpus.py"))
+ev = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(ev)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS = os.path.join(ROOT, "compat", "corpus")
@@ -83,7 +89,13 @@ def main():
         pdf = os.path.join(CORPUS, r["id"] + ".pdf")
         if not os.path.isfile(pdf):
             pdf = os.path.join(CORPUS, r["id"])
-        rect = [str(v) for v in r["rect"]]
+        rect = r["rect"]
+        if "geometry" in r:
+            # `--geometry any`: the rect is in the displayed frame; redact
+            # takes default user space.
+            g = r["geometry"]
+            rect = ev.to_user(rect, (g["rotate"], g["crop_box"]))
+        rect = [str(v) for v in rect]
         page = str(r.get("page", 1))
         p = subprocess.run([binary, "redact", pdf, "--page", page, "--rect", *rect, *walk_args, "--explain"],
                            capture_output=True, text=True)
@@ -133,8 +145,9 @@ def main():
         print(f"  {n:4}  {k}")
     if out_json:
         doc = {"summary": summary, "runs": runs}
-        if "pages" in report:
-            doc["pages"] = report["pages"]
+        for k in ("pages", "geometry", "ink"):
+            if k in report:
+                doc[k] = report[k]
         json.dump(doc, open(out_json, "w"), indent=1, ensure_ascii=False)
 
 

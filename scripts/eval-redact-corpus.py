@@ -76,13 +76,26 @@ a check that did not run is not a check that passed.
 
 Pages whose geometry differs from plain MediaBox space (a /Rotate, a
 CropBox, a MediaBox not at the origin) are skipped: the generated rects
-would not map 1:1. Usage:
+would not map 1:1 — unless `--geometry any`: every measurement is then
+taken in the page's displayed frame (the CropBox as `pdfinfo` reports
+it, turned by /Rotate, origin at its lower left: what `pdftotext
+-cropbox`, `pdftoppm -cropbox` and MuPDF report), the rects are
+generated there, and each rect is turned back into default user space
+for `redact` (a /Rotate of 0, 90, 180 or 270; other values and a
+/UserUnit other than 1 are skipped). The report then records each run's
+`geometry` and carries a top-level `"geometry": "any"` marker. `--ink`
+adds, on every page, an `ink` rect: a window of a sixth of the page each
+way around the inked pixel (of the input's render) nearest the page's
+centre — a rect that meets drawn content whether or not the page has
+words. Usage:
 
     scripts/eval-redact-corpus.py <kasane-pdf> [--per-category N] [--json out.json]
         [--redact-arg ARG …]   (passed to `redact`, e.g. --remove-annotations)
         [--pages first|spread] (first: page 1, the default; spread: page 1,
                                 the middle and the last page, each run
                                 recording its page)
+        [--geometry plain|any] (plain, the default: plain MediaBox pages only)
+        [--ink]                (an `ink` rect on every page)
 """
 
 import collections
@@ -106,6 +119,9 @@ DPI = 100
 TOOL_TIMEOUT = 120
 # The page evaluated (1 unless --pages spread sets each in turn).
 PAGE = 1
+# `--geometry any`: the page's displayed frame, (rotate, crop box), set
+# with PAGE; None in plain mode (default user space is the frame).
+FRAME = None
 # The states of a text measurement and the reasons of the ones that are
 # not measurements (closed vocabularies: they are published).
 TEXT_STATES = ("success", "empty", "error", "timeout", "incomplete", "incomparable")
@@ -198,6 +214,59 @@ def plain_geometry(pdf):
     return m[2], m[3]
 
 
+def page_frame(pdf):
+    """`--geometry any`: ((width, height) of the displayed frame,
+    (rotate, crop box)), or None (a /Rotate not a multiple of 90, a
+    /UserUnit other than 1, a box that cannot be read)."""
+    r = subprocess.run(["pdfinfo", "-box", "-f", str(PAGE), "-l", str(PAGE), pdf], capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    rot = re.search(rf"Page\s+{PAGE} rot:\s+(\d+)", r.stdout)
+    cb = re.search(rf"Page\s+{PAGE} CropBox:\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)", r.stdout)
+    if not (rot and cb) or int(rot.group(1)) % 360 not in (0, 90, 180, 270):
+        return None
+    if user_unit(pdf) not in (None, 1.0):
+        return None
+    box = [float(v) for v in cb.groups()]
+    w, h = box[2] - box[0], box[3] - box[1]
+    if not (w > 0 and h > 0):
+        return None
+    rot = int(rot.group(1)) % 360
+    return ((w, h) if rot in (0, 180) else (h, w)), (rot, box)
+
+
+def user_unit(pdf):
+    """The page's /UserUnit (None: absent), read with qpdf."""
+    r = subprocess.run(["qpdf", "--json", "--json-key=pages", "--json-key=qpdf", pdf], capture_output=True, text=True)
+    try:
+        d = json.loads(r.stdout)
+        page = d["pages"][PAGE - 1]["object"]
+        objs = d["qpdf"][1]
+        v = objs["obj:" + page]["value"].get("/UserUnit")
+    except (ValueError, KeyError, IndexError, TypeError):
+        return 0.0
+    if v is None:
+        return None
+    return float(v) if isinstance(v, (int, float)) else 0.0
+
+
+def to_user(rect, frame):
+    """A rect of the displayed frame (lower-left origin) in default user
+    space, for `redact`."""
+    rot, (bx0, by0, bx1, by1) = frame
+    def pt(x, y):
+        return {0: (x + bx0, y + by0), 90: (bx1 - y, x + by0),
+                180: (bx1 - x, by1 - y), 270: (y + bx0, by1 - x)}[rot]
+    (ax, ay), (cx, cy) = pt(rect[0], rect[1]), pt(rect[2], rect[3])
+    return (min(ax, cx), min(ay, cy), max(ax, cx), max(ay, cy))
+
+
+def crop():
+    """`-cropbox` for Poppler's tools under `--geometry any` (MuPDF uses
+    the crop box already)."""
+    return ["-cropbox"] if FRAME is not None else []
+
+
 def _local(tag):
     return tag.rsplit("}", 1)[-1]
 
@@ -230,10 +299,36 @@ def parse_bbox(data, height):
 
 def poppler_words(pdf, height):
     """The page's words by Poppler (`pdftotext -bbox`), as a measurement."""
-    st, why, data = run_tool([tool("pdftotext"), "-bbox", "-f", str(PAGE), "-l", str(PAGE), pdf, "-"])
+    st, why, data = run_tool([tool("pdftotext"), *crop(), "-bbox", "-f", str(PAGE), "-l", str(PAGE), pdf, "-"])
     if st:
         return measure(st, why)
     return parse_bbox(data, height)
+
+
+def ink_rect(pdf, size, tmp):
+    """`--ink`: a window of a sixth of the page each way (in the displayed
+    frame) around the inked pixel of the input's render nearest the
+    page's centre; None on a blank page."""
+    try:
+        w0, h0, a = render(pdf, os.path.join(tmp, "ink"))
+    except subprocess.CalledProcessError:
+        return None
+    cx, cy = w0 / 2, h0 / 2
+    best = None
+    for y in range(h0):
+        row = y * w0
+        for x in range(w0):
+            if a[row + x] < 192:
+                d = (x - cx) ** 2 + (y - cy) ** 2
+                if best is None or d < best[0]:
+                    best = (d, x, y)
+    if best is None:
+        return None
+    s = DPI / 72.0
+    w, h = size
+    px, py = (best[1] + 0.5) / s, h - (best[2] + 0.5) / s
+    hw, hh = w / 12, h / 12
+    return (max(0.0, px - hw), max(0.0, py - hh), min(w, px + hw), min(h, py + hh))
 
 
 def rects_for(pdf, size, ws):
@@ -310,7 +405,7 @@ def image_digests(pdf, tmp, tag):
 
 
 def render(pdf, base):
-    subprocess.run(["pdftoppm", "-r", str(DPI), "-gray", "-f", str(PAGE), "-l", str(PAGE), "-singlefile", pdf, base],
+    subprocess.run(["pdftoppm", *crop(), "-r", str(DPI), "-gray", "-f", str(PAGE), "-l", str(PAGE), "-singlefile", pdf, base],
                    capture_output=True, check=True)
     data = open(base + ".pgm", "rb").read()
     parts = data.split(maxsplit=4)
@@ -387,7 +482,8 @@ def run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args=()):
     out = os.path.join(tmp, "out.pdf")
     if os.path.exists(out):
         os.remove(out)
-    args = [kasane, "redact", pdf, "--page", str(PAGE), "--rect"] + [f"{v:.3f}" for v in rect] + list(extra_args) + ["--output", out]
+    user = to_user(rect, FRAME) if FRAME is not None else rect
+    args = [kasane, "redact", pdf, "--page", str(PAGE), "--rect"] + [f"{v:.3f}" for v in user] + list(extra_args) + ["--output", out]
     t0 = time.monotonic()
     r = subprocess.run(args, capture_output=True, text=True, timeout=600)
     res = {"kind": kind, "rect": [round(v, 2) for v in rect], "seconds": round(time.monotonic() - t0, 3)}
@@ -562,6 +658,8 @@ def main():
     out_json = None
     extra_args = []
     pages_mode = "first"
+    geometry = "plain"
+    ink = False
     a = sys.argv[2:]
     while a:
         if a[0] == "--per-category":
@@ -572,6 +670,10 @@ def main():
             extra_args.append(a[1]); a = a[2:]
         elif a[0] == "--pages" and a[1:2] and a[1] in ("first", "spread"):
             pages_mode = a[1]; a = a[2:]
+        elif a[0] == "--geometry" and a[1:2] and a[1] in ("plain", "any"):
+            geometry = a[1]; a = a[2:]
+        elif a[0] == "--ink":
+            ink = True; a = a[1:]
         else:
             sys.exit(f"unknown argument {a[0]}")
     # MuPDF is a required witness, not an optional one: without it the
@@ -594,21 +696,34 @@ def main():
                 skipped.append((f["id"], "page count unknown"))
                 continue
             pages = sorted({1, (n + 1) // 2, n})
-        global PAGE
+        global PAGE, FRAME
         for PAGE in pages:
-            size = plain_geometry(pdf)
+            FRAME = None
+            if geometry == "plain":
+                size = plain_geometry(pdf)
+                why = "page geometry not plain MediaBox space"
+            else:
+                got = page_frame(pdf)
+                size, FRAME = got if got else (None, None)
+                why = "page geometry not supported (/Rotate, /UserUnit or box)"
             if size is None:
-                skipped.append((f["id"] if pages_mode == "first" else f"{f['id']}#{PAGE}",
-                                "page geometry not plain MediaBox space"))
+                skipped.append((f["id"] if pages_mode == "first" else f"{f['id']}#{PAGE}", why))
                 continue
             in_pop, in_mu = input_measures(pdf, size)
             rects, _ = rects_for(pdf, size, in_pop.get("words") or [])
+            if ink:
+                with tempfile.TemporaryDirectory() as tmp:
+                    r = ink_rect(pdf, size, tmp)
+                if r is not None:
+                    rects.append(("ink", r))
             for kind, rect in rects:
                 with tempfile.TemporaryDirectory() as tmp:
                     res = run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args)
                 res.update(id=f["id"], category=f["category"], producer=f.get("producer"))
                 if pages_mode != "first":
                     res["page"] = PAGE
+                if FRAME is not None:
+                    res["geometry"] = {"rotate": FRAME[0], "crop_box": FRAME[1]}
                 results.append(res)
                 extra = res.get("reason", "")
                 print(f"{res['outcome']:<10} {f['category']:<12} {f['id'][:40]:<40} {kind:<5} {extra[:110]}")
@@ -658,6 +773,10 @@ def main():
         doc = {"results": results, "skipped": skipped}
         if pages_mode != "first":
             doc["pages"] = pages_mode
+        if geometry != "plain":
+            doc["geometry"] = geometry
+        if ink:
+            doc["ink"] = True
         json.dump(doc, open(out_json, "w"), indent=1)
     sys.exit(1 if counts.get("unexpected") or counts.get("incomplete") else 0)
 
