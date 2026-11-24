@@ -6,6 +6,19 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `redact`: `RedactOptions::with_usage_rights(UsageRightsPolicy::Remove)`
+  (CLI `--remove-usage-rights`) redacts a document with a usage-rights
+  signature (`/Perms /UR`, `/UR3`) instead of refusing it. The
+  signatures are removed exactly as `rewrite_with` removes them — any
+  other signature, timestamp, XFA signature, `/Lock`, `/DSS`, `/Legal`,
+  a shared or unconfirmed one still refuses — and checked as it checks
+  them; the result is redacted; the redacted output is checked against
+  the signed input (no signature left; use and non-interference). The
+  rights they granted are withdrawn and reported in
+  `Redaction::usage_rights_removed`; nothing is re-signed. The default
+  is unchanged (refused).
+
 ### Changed
 - `redact`: a NoRotate annotation drawn from a normal appearance stream
   it selects (not a widget, not a Text annotation, not NoZoom) no longer

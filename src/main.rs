@@ -2129,7 +2129,7 @@ fn redact_usage() -> &'static str {
      [--rect …] [--page <m> --rect …] [--remove-structure-tree] \
      [--refuse-copies-elsewhere] [--remove-annotations] \
      [--embed-substitute-fonts] [--remove-javascript] [--refuse-uninspected] \
-     --output <out.pdf>\n\
+     [--remove-usage-rights] --output <out.pdf>\n\
      Removes the text, image samples and paths drawn inside the rects (page \
      default user space; --page is 1-based, each --rect belongs to the nearest \
      preceding --page), removes /Info and XMP metadata, leaves no route to an \
@@ -2146,6 +2146,10 @@ fn redact_usage() -> &'static str {
      and Courier fonts by embedded substitutes (Liberation, Kasane Courier) so their text \
      can be redacted. --remove-javascript removes every JavaScript action \
      and script tree instead of refusing a document that runs scripts. \
+     --remove-usage-rights first removes usage-rights signatures (/Perms /UR, \
+     /UR3) instead of refusing the document, withdrawing the extended reader \
+     rights they granted; any other signature, timestamp or /Lock still \
+     refuses, and nothing is re-signed. \
      The data the output carries unread (attachments, metadata, unknown \
      streams …) is listed; --refuse-uninspected refuses instead when there \
      is any."
@@ -2163,6 +2167,7 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
     let mut remove_js = false;
     let mut refuse_uninspected = false;
     let mut embed_fonts = false;
+    let mut remove_usage_rights = false;
     let mut explain = false;
     let mut i = 1;
     let num = |s: &String| -> Result<f64, Error> {
@@ -2222,6 +2227,10 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
             }
             "--refuse-uninspected" => {
                 refuse_uninspected = true;
+                i += 1;
+            }
+            "--remove-usage-rights" => {
+                remove_usage_rights = true;
                 i += 1;
             }
             // Corpus analysis (undocumented): list every finding of the
@@ -2288,7 +2297,12 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
             .remove_annotations(remove_annots)
             .embed_substitute_fonts(embed_fonts)
             .remove_javascript(remove_js)
-            .refuse_uninspected(refuse_uninspected),
+            .refuse_uninspected(refuse_uninspected)
+            .with_usage_rights(if remove_usage_rights {
+                kasane_pdf::UsageRightsPolicy::Remove
+            } else {
+                kasane_pdf::UsageRightsPolicy::Refuse
+            }),
     )?;
     write_atomic(
         &r.output,
@@ -2348,6 +2362,27 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
                 .map(|i| i + 1)
                 .collect::<Vec<_>>()
         );
+    }
+    if let Some(u) = &r.usage_rights_removed {
+        for e in &u.entries {
+            println!(
+                "usage-rights signature removed: /Perms /{} (rights withdrawn: {}); it was not \
+                 validated, and the output is not signed",
+                match e.key {
+                    kasane_pdf::UsageRightsKey::Ur => "UR",
+                    _ => "UR3",
+                },
+                if e.rights.is_empty() {
+                    "none named".to_string()
+                } else {
+                    e.rights
+                        .iter()
+                        .map(|r| format!("{r:?}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            );
+        }
     }
     let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
     for f in &r.residual.findings {

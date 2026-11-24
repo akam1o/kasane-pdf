@@ -211,7 +211,10 @@ property cannot be decided).
   form readers must render from XFA alone, or whose packets something
   kept refers to or copies (0.10: otherwise the XFA form is removed with
   `remove_javascript` or when fields are edited); signed and encrypted
-  documents.
+  documents (but for usage-rights signatures with
+  `UsageRightsPolicy::Remove`: removed and checked as `rewrite_with`
+  removes them, the redacted output checked again against the signed
+  input; see `docs/features/redaction.md`, *Usage-rights signatures*).
 
 ### 2.4 Original data left in objects and streams
 

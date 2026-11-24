@@ -72,7 +72,7 @@ pub(crate) struct Scan {
     pub values: usize,
 }
 
-fn not_removable(detail: impl Into<String>) -> Error {
+pub(crate) fn not_removable(detail: impl Into<String>) -> Error {
     Error::SignaturePolicy {
         rule: SignatureRule::UsageRightsNotRemovable,
         detail: detail.into(),
@@ -1003,6 +1003,176 @@ pub(crate) fn check_output(
     })
 }
 
+/// A redaction's output `out` of the document `input` whose usage-rights
+/// signatures `plan` removed (then redacted, which rewrites every object
+/// and may edit the catalog and the form): no signature-like dictionary,
+/// `/ByteRange` or field `/Lock` anywhere — the plan allowed none but
+/// the removed ones —, `/Perms` without `/UR`, `/UR3` or `/DocMDP` and
+/// holding what the removal left, `/AcroForm /SigFlags` as the removal
+/// set it when the form is still there. Any failure is
+/// [`SignatureRule::ResidualSignature`].
+pub(crate) fn check_redacted(
+    input: &Document,
+    out: &Document,
+    plan: &Plan,
+    limits: &Limits,
+) -> Result<(), Error> {
+    let s =
+        scan(out, limits).map_err(|_| residual("the output could not be searched completely"))?;
+    if s.signature_like > 0 || s.byte_ranges > 0 {
+        return Err(residual(format_args!(
+            "{} signature-like dictionar(ies), {} with /ByteRange",
+            s.signature_like, s.byte_ranges
+        )));
+    }
+    if s.locks > 0 {
+        return Err(residual("a field /Lock"));
+    }
+    // /Perms: gone when the removal emptied it; else exactly the entries
+    // the removal left (same keys; a direct value equal, a reference
+    // still a reference — numbers differ after the rewrites).
+    let left_in: Vec<(Vec<u8>, Object)> = match input.catalog().get(b"Perms".as_slice()) {
+        Some(p) => match deref_chain(input, p) {
+            Ok(Object::Dict(d)) => d
+                .iter()
+                .filter(|(k, _)| !plan.targets.iter().any(|t| t.key.name() == k.as_slice()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            _ => return Err(residual("the input /Perms cannot be read")),
+        },
+        None => Vec::new(),
+    };
+    match out.catalog().get(b"Perms".as_slice()) {
+        None if plan.perms_left == 0 => {}
+        None => return Err(residual("/Perms is gone though it held more")),
+        Some(_) if plan.perms_left == 0 => return Err(residual("/Perms is still there")),
+        Some(p) => {
+            let p = deref_chain(out, p).map_err(|_| residual("/Perms cannot be read"))?;
+            let Object::Dict(left) = p else {
+                return Err(residual("/Perms is not a dictionary"));
+            };
+            if [b"UR".as_slice(), b"UR3", b"DocMDP"]
+                .iter()
+                .any(|k| left.contains_key(*k))
+            {
+                return Err(residual("/Perms still has /UR, /UR3 or /DocMDP"));
+            }
+            let mut nodes = budget(limits);
+            let mut same = left.len() == left_in.len();
+            for (k, v) in &left_in {
+                same = same
+                    && match left.get(k.as_slice()) {
+                        Some(w) => same_value(input, v, out, w, 0, &mut nodes)?,
+                        None => false,
+                    };
+            }
+            if !same {
+                return Err(residual("/Perms does not hold what was left in it"));
+            }
+        }
+    }
+    // /SigFlags: exactly as the removal set it on a form the output keeps
+    // (a form the redaction removed has none).
+    let form = match out.catalog().get(b"AcroForm".as_slice()) {
+        None => None,
+        // A null form is none (as the assessment reads it).
+        Some(af) => match deref_chain(out, af).map_err(|_| residual("/AcroForm cannot be read"))? {
+            Object::Null => None,
+            Object::Dict(af) => Some(af),
+            _ => return Err(residual("/AcroForm is not a dictionary")),
+        },
+    };
+    if let Some(af) = form {
+        let got = match af.get(b"SigFlags".as_slice()) {
+            None => None,
+            Some(f) => {
+                match deref_chain(out, f).map_err(|_| residual("/SigFlags cannot be read"))? {
+                    Object::Integer(v) => Some(v),
+                    Object::Null => Some(0),
+                    _ => return Err(residual("/SigFlags is not an integer")),
+                }
+            }
+        };
+        let want = match plan.sig_flags {
+            Some((_, after, _)) => Some(after),
+            None => plan.sig_flags_read,
+        };
+        if got != want || got.is_some_and(|f| f & 1 != 0) {
+            return Err(residual("/AcroForm /SigFlags is not as declared"));
+        }
+    }
+    if out.pages().len() != input.pages().len() {
+        return Err(residual("the page count differs from the input's"));
+    }
+    Ok(())
+}
+
+/// Whether the value `a` of `input` and `b` of `out` are the same data:
+/// equal direct values, dictionaries with the same keys and arrays of
+/// the same length holding the same values, streams with the same
+/// dictionary and bytes, a reference standing for the same value as the
+/// other side (followed to its end; reference numbers differ after a
+/// rewrite). Bounded: 16 levels deep and `nodes` values in all, beyond
+/// which the comparison fails with [`residual`]; an unreadable value is
+/// not the same.
+fn same_value(
+    input: &Document,
+    a: &Object,
+    out: &Document,
+    b: &Object,
+    depth: usize,
+    nodes: &mut usize,
+) -> Result<bool, Error> {
+    if depth > 16 || *nodes == 0 {
+        return Err(residual("/Perms could not be compared completely"));
+    }
+    *nodes -= 1;
+    let read = |d: &Document, o: &Object| match o {
+        Object::Ref(_) => deref_chain(d, o).ok(),
+        v => Some(v.clone()),
+    };
+    let (Some(a), Some(b)) = (read(input, a), read(out, b)) else {
+        return Ok(false);
+    };
+    Ok(match (&a, &b) {
+        (Object::Dict(x), Object::Dict(y)) => {
+            if x.len() != y.len() {
+                return Ok(false);
+            }
+            for (k, v) in x.iter() {
+                match y.get(k.as_slice()) {
+                    Some(w) if same_value(input, v, out, w, depth + 1, nodes)? => {}
+                    _ => return Ok(false),
+                }
+            }
+            true
+        }
+        (Object::Array(x), Object::Array(y)) => {
+            if x.len() != y.len() {
+                return Ok(false);
+            }
+            for (v, w) in x.iter().zip(y) {
+                if !same_value(input, v, out, w, depth + 1, nodes)? {
+                    return Ok(false);
+                }
+            }
+            true
+        }
+        (Object::Stream { dict: x, data: dx }, Object::Stream { dict: y, data: dy }) => {
+            dx == dy
+                && same_value(
+                    input,
+                    &Object::Dict(x.clone()),
+                    out,
+                    &Object::Dict(y.clone()),
+                    depth + 1,
+                    nodes,
+                )?
+        }
+        (x, y) => x == y,
+    })
+}
+
 /// The report of a removal carried out under `plan`. Content-free.
 pub(crate) fn removal(
     doc: &Document,
@@ -1178,6 +1348,107 @@ mod tests {
         /ByteRange [0 1 2 3] /Contents <0001> /Reference [<< /Type /SigRef /TransformMethod /UR3 \
         /TransformParams << /Type /TransformParams /Form [/FillIn] /V /2.2 >> >>] >>";
 
+    /// `check_redacted` refuses an output with any signature-like
+    /// dictionary, a `/ByteRange`, a `/Lock`, `/Perms` keys or a
+    /// `/SigFlags` other than declared, or another page count; it
+    /// accepts the clean one.
+    #[test]
+    fn check_redacted_compares_kept_perms_entries() {
+        let input = doc(
+            "/Perms << /UR3 10 0 R /X 5 /Y 11 0 R /Z [11 0 R] >> /AcroForm null",
+            "",
+            &[(10, UR3), (11, "<< /A 1 >>")],
+        );
+        let plan = assess(&input, &Limits::default()).unwrap().unwrap();
+        let ok = |cat: &str, objs: &[(u32, &str)]| {
+            check_redacted(&input, &doc(cat, "", objs), &plan, &Limits::default())
+        };
+        // Renumbered, in a direct container too; inlined; a null form.
+        assert!(ok(
+            "/Perms << /X 5 /Y 12 0 R /Z [12 0 R] >>",
+            &[(12, "<< /A 1 >>")]
+        )
+        .is_ok());
+        assert!(ok(
+            "/Perms << /X 5 /Y << /A 1 >> /Z [12 0 R] >> /AcroForm null",
+            &[(12, "<< /A 1 >>")]
+        )
+        .is_ok());
+        for cat in [
+            "/Perms << /X 6 /Y 12 0 R /Z [12 0 R] >>",
+            "/Perms << /X 5 /W 12 0 R /Z [12 0 R] >>",
+            "/Perms << /X 5 /Y 13 0 R /Z [12 0 R] >>",
+            "/Perms << /X 5 /Y 12 0 R /Z [13 0 R] >>",
+            "/Perms << /X 5 /Y 12 0 R /Z [12 0 R 12 0 R] >>",
+            "/Perms << /X 5 /Y 12 0 R >>",
+            "/Perms << /X 5 /Y 99 0 R /Z [12 0 R] >>",
+            "",
+        ] {
+            assert!(
+                ok(cat, &[(12, "<< /A 1 >>"), (13, "<< /A 2 >>")]).is_err(),
+                "{cat}"
+            );
+        }
+    }
+
+    #[test]
+    fn check_redacted_refuses_what_is_left() {
+        let input = doc(
+            "/Perms << /UR3 10 0 R >> /AcroForm << /Fields [] /SigFlags 3 >>",
+            "",
+            &[(10, UR3)],
+        );
+        let plan = assess(&input, &Limits::default()).unwrap().unwrap();
+        let ok = |cat: &str, objs: &[(u32, &str)]| {
+            check_redacted(&input, &doc(cat, "", objs), &plan, &Limits::default())
+        };
+        assert!(ok("/AcroForm << /Fields [] /SigFlags 2 >>", &[]).is_ok());
+        assert!(ok("", &[]).is_ok(), "the form removed");
+        for (cat, objs) in [
+            ("/AcroForm << /Fields [] /SigFlags 3 >>", vec![]),
+            ("/AcroForm << /Fields [] /SigFlags 0 >>", vec![]),
+            (
+                "/Perms << >> /AcroForm << /Fields [] /SigFlags 2 >>",
+                vec![],
+            ),
+            ("/Perms << /UR3 10 0 R >>", vec![(10, UR3)]),
+            ("/X 10 0 R", vec![(10, UR3)]),
+            (
+                "/X << /ByteRange [0 1 2 3] /Contents <00> /Type /Sig >>",
+                vec![],
+            ),
+            (
+                "/AcroForm << /Fields [10 0 R] /SigFlags 2 >>",
+                vec![(10, "<< /FT /Sig /T (x) /Lock << /Action /All >> >>")],
+            ),
+            // A bare /ByteRange; the kept form without its flags, or
+            // with malformed ones.
+            ("/X << /ByteRange [0 1 2 3] >>", vec![]),
+            ("/AcroForm << /Fields [] >>", vec![]),
+            ("/AcroForm << /Fields [] /SigFlags /Two >>", vec![]),
+            ("/AcroForm 10 0 R", vec![(10, "[1 2]")]),
+            // Another page count.
+            (
+                "/AcroForm << /Fields [] /SigFlags 2 >>",
+                vec![
+                    (2, "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>"),
+                    (4, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>"),
+                ],
+            ),
+        ] {
+            assert!(
+                matches!(
+                    ok(cat, &objs),
+                    Err(Error::SignaturePolicy {
+                        rule: SignatureRule::ResidualSignature,
+                        ..
+                    })
+                ),
+                "{cat}"
+            );
+        }
+    }
+
     /// Catalog entries `cat` (object 1), one page (3) with `page`, and
     /// `objs` from 10 on; a body `BROKEN` is unreadable.
     fn doc(cat: &str, page: &str, objs: &[(u32, &str)]) -> Document {
@@ -1194,7 +1465,10 @@ mod tests {
                 format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] {page} >>"),
             ),
         ];
+        // An object numbered 1–3 in `objs` replaces the built-in one.
+        all.retain(|(n, _)| !objs.iter().any(|(m, _)| m == n));
         all.extend(objs.iter().map(|(n, b)| (*n, b.to_string())));
+        all.sort_by_key(|(n, _)| *n);
         let mut out = b"%PDF-1.7\n".to_vec();
         let size = all.iter().map(|o| o.0).max().unwrap() + 1;
         let mut offs = vec![None; size as usize];

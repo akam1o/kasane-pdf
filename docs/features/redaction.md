@@ -209,7 +209,58 @@ Anywhere: an
 undecidable resource use; a structure tree that cannot be edited
 exactly (below); with `refuse_copies_elsewhere`, any copy found
 elsewhere; with `refuse_uninspected`, any data carried uninspected
-(below). Rewrite refusals (signed or encrypted documents, …) apply.
+(below). Rewrite refusals (signed or encrypted documents, …) apply,
+but for usage-rights signatures on request (below).
+
+## Usage-rights signatures
+
+A document whose `/Perms` holds a usage-rights signature (`/UR`,
+`/UR3`: Reader extensions that let a reader save a filled form, comment
+…) is refused like any signed one. With
+`RedactOptions::with_usage_rights(UsageRightsPolicy::Remove)` (CLI
+`--remove-usage-rights`) it is redacted in three steps:
+
+1. The usage-rights signatures are removed exactly as
+   `rewrite_with(… UsageRightsPolicy::Remove)` removes them: only a
+   signature confirmed as one by its structure (`/Reference` with
+   `/TransformMethod /UR` or `/UR3`, not shared, not a chain), in a
+   document with nothing else signature-like anywhere — no
+   certification (`/DocMDP`), approval signature, document timestamp,
+   XFA XML signature, field `/Lock`, `/DSS` or `/Legal`, nothing that
+   cannot be searched completely (each refuses, with the rule
+   `rewrite_with` gives). `/Perms` goes when nothing else is in it,
+   `/AcroForm /SigFlags` loses bit 1. That output is checked as
+   `rewrite_with` checks it — parsed again, nothing written but what a
+   rewrite writes with those entries cut, no signature left — and
+   parsed again. It is carried otherwise as it is, scripts included:
+   the redaction applies its own policy to them. A literal string with
+   an unescaped carriage return read by that rewrite refuses here, as
+   the redaction refuses it (parsed again, it would no longer be one).
+2. That document is redacted with the other options, as any document.
+3. The redacted output is checked against the **signed input**, not
+   only against the intermediate one: no signature-like dictionary,
+   `/ByteRange` or field `/Lock` anywhere, `/Perms` gone when the
+   removal emptied it, else holding exactly the entries it left (the
+   same keys and the same values, compared through references —
+   their numbers change — to 16 levels),
+   `/SigFlags` exactly as the removal set it (bit 1 clear) on a form
+   the output keeps (a null `/AcroForm` is none), the same page count; and the redaction's invariants that
+   compare an input with an output — use, non-interference, removed
+   annotations, reachability — with the signed input as the input.
+
+A failure at any step refuses; the intermediate document is never
+returned. The rights the signatures granted are withdrawn — a reader
+that honoured them no longer lets the document be saved filled in,
+commented … — and `Redaction::usage_rights_removed` lists what was
+removed (`/Perms` key, `/SubFilter`, the rights named). The removed
+signature is not validated, and the output is not signed. An encrypted
+document with one is refused. A document without `/UR` or `/UR3` in
+`/Perms` is redacted exactly as without the option.
+
+Each step runs within the call's `Limits` on its own (as the substitute
+font embedding does): the work is at most the sum of a rewrite and a
+redaction (and an embedding), and the signed input, the intermediate
+document and the redaction's state are held at once.
 
 ## Structure tree
 
@@ -484,5 +535,6 @@ Each of these is refused with a typed error, not approximated:
   named marked-content properties (`/P0 BDC`: the text would stay in
   the resources) or on a marked-content point (`DP`); a structure tree
   that cannot be edited exactly (see "Structure tree").
-- **Documents**: signed or encrypted; forms nested more than 16 deep or
+- **Documents**: signed (but for usage-rights signatures on request) or
+  encrypted; forms nested more than 16 deep or
   cyclic.

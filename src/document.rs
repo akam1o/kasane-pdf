@@ -563,6 +563,38 @@ impl Document {
         out
     }
 
+    /// Run `f` and put back every counter it moved — the reference
+    /// budget, the decoded budget (without opening a scope of its own:
+    /// the caller's stays as it was), the object streams it decoded into
+    /// the cache, the warnings and recoveries, the unescaped-CR count —
+    /// so that the document is exactly as before: a probe that must
+    /// leave no trace.
+    pub(crate) fn peek<T>(&self, f: impl FnOnce() -> T) -> T {
+        let budget = self.ref_budget.get();
+        let decoded = self.decoded_budget.get();
+        let raw_cr = self.raw_cr_object_strings.get();
+        let (list, dropped, recoveries) = {
+            let w = self.warnings.borrow();
+            (w.list.clone(), w.dropped, w.recoveries)
+        };
+        let cached: std::collections::HashSet<u32> =
+            self.objstm_cache.borrow().keys().copied().collect();
+        let cached_bytes = self.objstm_cached_bytes.get();
+        let out = f();
+        self.ref_budget.set(budget);
+        self.decoded_budget.set(decoded);
+        self.raw_cr_object_strings.set(raw_cr);
+        self.objstm_cache
+            .borrow_mut()
+            .retain(|k, _| cached.contains(k));
+        self.objstm_cached_bytes.set(cached_bytes);
+        let mut w = self.warnings.borrow_mut();
+        w.list = list;
+        w.dropped = dropped;
+        w.recoveries = recoveries;
+        out
+    }
+
     /// How many recovery rules have been applied so far (a count that
     /// only grows): compared before and after a step, whether the step
     /// applied one.

@@ -59,6 +59,7 @@ pub struct RedactOptions {
     embed_substitute_fonts: bool,
     remove_javascript: bool,
     refuse_uninspected: bool,
+    usage_rights: crate::rewrite_policy::UsageRightsPolicy,
 }
 
 impl RedactOptions {
@@ -172,6 +173,29 @@ impl RedactOptions {
         self.embed_substitute_fonts = embed;
         self
     }
+
+    /// What to do with usage-rights signatures (`/Perms /UR`, `/UR3`):
+    /// by default ([`UsageRightsPolicy::Refuse`]) a document with one is
+    /// refused, like any signed document. With
+    /// [`UsageRightsPolicy::Remove`] they are removed first, exactly as
+    /// [`rewrite_with`](crate::rewrite_with) removes them — only a
+    /// signature confirmed as a usage-rights one, in a document with no
+    /// other signature, timestamp, XFA signature, field `/Lock`, `/DSS`
+    /// or `/Legal` (anything else refuses, as it does there) — and the
+    /// result is redacted. The extended reader rights they granted
+    /// (saving a filled form, commenting … in a reader that honours
+    /// them) are withdrawn: [`Redaction::usage_rights_removed`] says so.
+    /// Nothing is re-signed. The output is checked against the input it
+    /// was given: no signature-like dictionary, `/ByteRange` or `/Lock`
+    /// left, and the redaction's own use and non-interference checks.
+    /// An encrypted document with one is refused.
+    ///
+    /// [`UsageRightsPolicy::Refuse`]: crate::UsageRightsPolicy::Refuse
+    /// [`UsageRightsPolicy::Remove`]: crate::UsageRightsPolicy::Remove
+    pub fn with_usage_rights(mut self, policy: crate::rewrite_policy::UsageRightsPolicy) -> Self {
+        self.usage_rights = policy;
+        self
+    }
 }
 
 /// The result of [`redact`]: a verified single-revision PDF.
@@ -268,6 +292,11 @@ pub struct Redaction {
     /// the positional redaction does not touch. Review before
     /// distributing.
     pub residual: ResidualAudit,
+    /// The usage-rights signatures removed before redacting, with the
+    /// rights they granted (now withdrawn), when
+    /// [`RedactOptions::with_usage_rights`] asked for it and the input
+    /// had one; `None` otherwise (nothing removed).
+    pub usage_rights_removed: Option<crate::rewrite_policy::UsageRightsRemoval>,
 }
 
 /// Where removed text was found again in the output.
@@ -357,6 +386,11 @@ pub fn redact(
     options: &RedactOptions,
 ) -> Result<Redaction, Error> {
     options.limits.validate()?;
+    if options.usage_rights == crate::rewrite_policy::UsageRightsPolicy::Remove
+        && names_usage_rights(doc)
+    {
+        return redact_without_usage_rights(doc, specs, options);
+    }
     if options.embed_substitute_fonts {
         if let Some((bytes, n)) =
             crate::redact_fonts::embed_substitutes(doc, &options.limits, options.remove_javascript)?
@@ -366,6 +400,114 @@ pub fn redact(
         }
     }
     redact_doc(doc, specs, options, 0)
+}
+
+/// A literal string holding an unescaped CR is a line feed here and a
+/// CR to some readers: written out it changes for them (a palette, a
+/// font name, a field value), so a document where one was read is
+/// refused.
+fn raw_cr_refusal(doc: &Document) -> Result<(), Error> {
+    if doc.raw_cr_object_strings() > 0 {
+        return Err(Error::Unsupported {
+            feature: "redaction of a document with an unescaped carriage return in a string",
+            detail: format!(
+                "{} literal string(s) — readers do not agree on their bytes",
+                doc.raw_cr_object_strings()
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Whether the catalog's `/Perms` names `/UR` or `/UR3`: only then is
+/// the removal assessed (a document without one is redacted as without
+/// the option, its refusals included). Unreadable: no (the redaction's
+/// own signature refusal reads it again).
+fn names_usage_rights(doc: &Document) -> bool {
+    let Some(p) = doc.catalog().get(b"Perms".as_slice()) else {
+        return false;
+    };
+    // Read without leaving anything on the document (budgets, cache,
+    // counters): without a usage-rights signature, the option changes
+    // nothing.
+    doc.peek(|| {
+        crate::rewrite::deref_chain(doc, p)
+            .ok()
+            .and_then(|p| p.as_dict().cloned())
+            .is_some_and(|p| p.contains_key(b"UR".as_slice()) || p.contains_key(b"UR3".as_slice()))
+    })
+}
+
+/// [`UsageRightsPolicy::Remove`](crate::UsageRightsPolicy::Remove):
+/// the usage-rights signatures removed by `rewrite_with`'s assessed
+/// removal and checked by its output check (nothing else changed); that
+/// output, parsed again, redacted as asked; the redacted output checked
+/// against `doc` itself. What fails, at any step, refuses: the
+/// intermediate document is never returned. Each step runs within
+/// `options.limits` on its own, as the font embedding does.
+fn redact_without_usage_rights(
+    doc: &Document,
+    specs: &[PageSpec],
+    options: &RedactOptions,
+) -> Result<Redaction, Error> {
+    let limits = &options.limits;
+    if doc.is_encrypted() {
+        return Err(crate::incremental::encrypted_write_refused());
+    }
+    let plan = crate::usage_rights::assess(doc, limits)?.ok_or_else(|| {
+        crate::usage_rights::not_removable("/Perms names /UR or /UR3 but no signature was found")
+    })?;
+    let overlay = doc.without_side_effects(|| crate::usage_rights::overlay(doc, &plan))?;
+    // Only the signatures are cut: everything else is carried as it is,
+    // scripts included, for the redaction to apply its own policy.
+    let (bytes, map, _) = crate::rewrite::rewrite_mapped(doc, limits, true, &overlay, true)?;
+    // The rewrite read every object it carries: a literal string with an
+    // unescaped carriage return there is refused here, on the signed
+    // input, as the redaction refuses it on its own input (the
+    // intermediate document holds the string as it was read, no longer
+    // as written).
+    raw_cr_refusal(doc)?;
+    let written = map.keys().copied().collect();
+    let check = doc.without_side_effects(|| {
+        crate::usage_rights::check_output(doc, Some(&plan), &bytes, &written, limits)
+    })?;
+    let removal = doc.without_side_effects(|| crate::usage_rights::removal(doc, &plan, check));
+    let unsigned = Document::from_bytes_with_limits(&bytes, limits.clone())?;
+    drop(bytes);
+    let inner = RedactOptions {
+        usage_rights: crate::rewrite_policy::UsageRightsPolicy::Refuse,
+        ..options.clone()
+    };
+    let mut r = redact(&unsigned, specs, &inner)?;
+    drop(unsigned);
+    verify_against_signed_input(doc, &r.output, specs, limits, &plan)?;
+    r.usage_rights_removed = Some(removal);
+    Ok(r)
+}
+
+/// The redacted output of [`redact_without_usage_rights`] against the
+/// signed input `doc`: no signature-like dictionary, `/ByteRange` or
+/// `/Lock` anywhere (the input had none but those removed), `/Perms`
+/// without `/UR`, `/UR3` or `/DocMDP`, `/SigFlags` as the removal set it;
+/// and the redaction's invariants that compare an input with an output
+/// (use, non-interference, removed annotations, reachability), with
+/// `doc` as the input.
+fn verify_against_signed_input(
+    doc: &Document,
+    output: &[u8],
+    specs: &[PageSpec],
+    limits: &Limits,
+    plan: &crate::usage_rights::Plan,
+) -> Result<(), Error> {
+    let out = Document::from_bytes_with_limits(output, limits.clone())?;
+    crate::usage_rights::check_redacted(doc, &out, plan, limits)?;
+    let idx = crate::redact_verify::Index::build(&out, limits)?;
+    let graph = crate::redact_verify::RefGraph::build(&out, &idx, limits)?;
+    crate::redact_verify::check_reachable(&idx, &graph)?;
+    let edited: BTreeSet<usize> = specs.iter().map(|(p, _)| *p).collect();
+    crate::redact_verify::check_use(doc, &out, &idx, &graph, &edited, limits)?;
+    crate::redact_verify::check_removed_annotations(doc, &out, &idx, &graph, &edited)?;
+    Ok(())
 }
 
 fn redact_doc(
@@ -513,15 +655,7 @@ fn redact_doc(
     // holding an unescaped CR is a line feed here and a CR to some
     // readers: written out it changes for them (a palette, a font
     // name, a field value), so the document is refused.
-    if doc.raw_cr_object_strings() > 0 {
-        return Err(Error::Unsupported {
-            feature: "redaction of a document with an unescaped carriage return in a string",
-            detail: format!(
-                "{} literal string(s) — readers do not agree on their bytes",
-                doc.raw_cr_object_strings()
-            ),
-        });
-    }
+    raw_cr_refusal(doc)?;
 
     // An original may stay only as an object the output still draws
     // (from a page, through forms); each such display is reported.
@@ -645,6 +779,7 @@ fn redact_doc(
         thumbnails_removed: s.thumbnails_removed_total,
         fields_removed: forms.fields_removed,
         xfa_removed,
+        usage_rights_removed: None,
         residual,
     })
 }
@@ -1288,6 +1423,34 @@ pub fn redaction_walk_findings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The usage-rights gate leaves no trace on a document without one:
+    /// as many reference resolutions left after it as on an identical
+    /// document it did not read, and the decoded budget, the cache, the
+    /// warnings and the unescaped-CR count as they were.
+    #[test]
+    fn the_usage_rights_gate_leaves_no_trace() {
+        let b = pdf(&[
+            b"<< /Type /Catalog /Pages 2 0 R /Perms 4 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>",
+            b"<< /X (a\rb) >>",
+        ]);
+        let left = |d: &Document| {
+            (0..)
+                .take_while(|_| d.resolve(IndirectRef::new(3, 0)).is_ok())
+                .count()
+        };
+        let lim = Limits::default().with_max_reference_depth(1000);
+        let (a, c) = (
+            Document::from_bytes_with_limits(&b, lim.clone()).unwrap(),
+            Document::from_bytes_with_limits(&b, lim).unwrap(),
+        );
+        assert!(!names_usage_rights(&a));
+        assert_eq!(a.raw_cr_object_strings(), c.raw_cr_object_strings());
+        assert_eq!(a.warnings().len(), c.warnings().len());
+        assert_eq!(left(&a), left(&c));
+    }
 
     fn pdf(objs: &[&[u8]]) -> Vec<u8> {
         let mut out = b"%PDF-1.7\n".to_vec();
