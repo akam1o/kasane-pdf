@@ -20,6 +20,22 @@ versions follow [Semantic Versioning](https://semver.org/).
   appearance, with a `/Subtype` given by reference or on a page whose
   `/Rotate` is not 0, 90, 180 or 270 are still refused.
 
+- `redact`: removed text inside a form XObject has its positions folded
+  with the text state the form inherits from its `Do` (font size,
+  horizontal scaling, leading, rendering mode — read from the page and
+  each enclosing form, once per calling stream) instead of an unknown
+  state; a `TJ` advance there no longer refuses ("a TJ advance under a
+  text scale not known here"). What stays unknown (an ExtGState that may
+  set the font) still refuses. (#84)
+- `redact` verification: content under an optional content membership
+  dictionary (`/OCMD`) counts as drawn — so its copy in the output is
+  not "carried without use" — when Poppler, MuPDF and pdf.js all show
+  it: no `/VE`, `/P /AnyOn` (the default) or `/AllOn` over a direct
+  array, every group on, listed in a well-formed `/OCProperties /OCGs`
+  (no `/Configs`; every `/OCGs`, `/ON` and `/OFF` entry a listed group by
+  reference) and with no `/Intent` other than `/View`. Any other OCMD
+  still counts as hidden. (#85)
+
 ### Fixed
 - `redact` refused long documents with Type 3 fonts with
   `max_diag_exec_ops`: the walk that finds which Type 3 glyphs the input
