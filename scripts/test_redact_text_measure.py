@@ -277,6 +277,18 @@ class RunOutcomes(unittest.TestCase):
         self.assertEqual(r["text_measures"], {k: "success" for k in ("poppler_in", "poppler_out", "mupdf_in", "mupdf_out")})
         self.assertEqual((r["outside_chars_mupdf"], r["outside_chars_mupdf_lost"]), (1, 0))
 
+    def test_an_unreadable_render_is_incomplete_and_keeps_other_findings(self):
+        unreadable = ("unreadable", None, None)
+        r = self.run_one(m_ok([WORD]), m_ok(chars=[CHAR]), m_ok([WORD]), m_ok(chars=[CHAR]), pixels=unreadable)
+        self.assertEqual(r["outcome"], "incomplete", r)
+        self.assertIn("render", r["reason"])
+        # A character still inside the rect: unexpected, whatever the render.
+        inside = ("S", 120.0, 120.0, 120.0, 118.0, 128.0, 130.0)
+        r = self.run_one(m_ok([WORD]), m_ok(chars=[CHAR, inside]), m_ok([WORD]), m_ok(chars=[CHAR, inside]),
+                         pixels=unreadable)
+        self.assertEqual(r["outcome"], "unexpected", r)
+        self.assertIn("inside the rect (MuPDF)", r["reason"])
+
     def test_a_page_without_text_is_ok(self):
         r = self.run_one(m_ok(), m_ok(chars=[]), m_ok(), m_ok(chars=[]))
         self.assertEqual(r["outcome"], "ok", r)
@@ -550,6 +562,61 @@ def real():
             failed += not ok
     print(f"test_redact_text_measure --real: {'failed' if failed else 'passed'} ({failed} failing)")
     return 1 if failed else 0
+
+
+class Geometry(unittest.TestCase):
+    """`--geometry any`: a rect of the displayed frame (the crop box
+    turned by /Rotate, lower-left origin) back in default user space.
+    The forward map is the one Poppler (`-cropbox`), MuPDF and pdftoppm
+    were checked against on synthetic pages of every rotation."""
+
+    def forward(self, frame, u, v):
+        rot, (x0, y0, x1, y1) = frame
+        return {0: (u - x0, v - y0), 90: (v - y0, x1 - u),
+                180: (x1 - u, y1 - v), 270: (y1 - v, u - x0)}[rot]
+
+    def test_to_user(self):
+        box = [20.0, 30.0, 300.0, 400.0]
+        # A user-space rect (130, 210)–(150, 220) as each rotation shows it.
+        shown = {0: (110, 180, 130, 190), 90: (180, 150, 190, 170),
+                 180: (150, 180, 170, 190), 270: (180, 110, 190, 130)}
+        for rot, rect in shown.items():
+            self.assertEqual(ev.to_user(rect, (rot, box)), (130, 210, 150, 220), rot)
+        # Round trip, a negative MediaBox origin's crop box included.
+        for box in ([20.0, 30.0, 300.0, 400.0], [-50.0, -40.0, 10.0, 60.0], [0.0, 0.0, 612.0, 792.0]):
+            for rot in (0, 90, 180, 270):
+                f = (rot, box)
+                r = ev.to_user((3.0, 4.0, 15.0, 9.0), f)
+                pts = [self.forward(f, r[0], r[1]), self.forward(f, r[2], r[3])]
+                got = (min(p[0] for p in pts), min(p[1] for p in pts),
+                       max(p[0] for p in pts), max(p[1] for p in pts))
+                self.assertEqual(tuple(round(v, 9) for v in got), (3.0, 4.0, 15.0, 9.0), (rot, box))
+        # No frame: no conversion (the plain mode never calls it).
+        self.assertIsNone(ev.FRAME)
+
+    def test_pgm_samples_that_look_like_white_space(self):
+        raster = bytes([9, 10, 13, 32, 0, 255])
+        self.assertEqual(ev.parse_pgm(b"P5\n3 2\n255\n" + raster), (3, 2, raster))
+        self.assertEqual(ev.parse_pgm(b"P5 # c\n3\t2 255 " + raster), (3, 2, raster))
+        for bad in (b"P5\n3 2\n255\n" + raster[:-1], b"P6\n3 2\n255\n" + raster,
+                    b"P5\n3 2\n65535\n" + raster, b"P5\n3", b"P5\n0 0\n255\n",
+                    b"P5\n-1 -1\n255\n\x00"):
+            with self.assertRaises(ValueError):
+                ev.parse_pgm(bad)
+
+    def test_reports_with_markers_are_refused_downstream(self):
+        proj = load("redact_results_projection", "redact-results-projection.py")
+        import io
+        import contextlib
+        import tempfile
+        for marker in ("geometry", "ink"):
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump({"results": [], marker: True}, f)
+            sys.argv = ["x", f.name, f.name + ".out"]
+            with self.assertRaises(SystemExit) as e, contextlib.redirect_stderr(io.StringIO()):
+                proj.main()
+            self.assertNotEqual(e.exception.code, 0, marker)
+            os.unlink(f.name)
 
 
 if __name__ == "__main__":

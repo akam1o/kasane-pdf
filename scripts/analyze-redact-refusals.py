@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS = os.path.join(ROOT, "compat", "corpus")
 
@@ -83,7 +84,9 @@ def main():
         pdf = os.path.join(CORPUS, r["id"] + ".pdf")
         if not os.path.isfile(pdf):
             pdf = os.path.join(CORPUS, r["id"])
-        rect = [str(v) for v in r["rect"]]
+        # `--geometry any` records the rect as passed to redact (default
+        # user space); `rect` is in the displayed frame.
+        rect = [str(v) for v in r.get("user_rect", r["rect"])]
         page = str(r.get("page", 1))
         p = subprocess.run([binary, "redact", pdf, "--page", page, "--rect", *rect, *walk_args, "--explain"],
                            capture_output=True, text=True)
@@ -133,8 +136,9 @@ def main():
         print(f"  {n:4}  {k}")
     if out_json:
         doc = {"summary": summary, "runs": runs}
-        if "pages" in report:
-            doc["pages"] = report["pages"]
+        for k in ("pages", "geometry", "ink"):
+            if k in report:
+                doc[k] = report[k]
         json.dump(doc, open(out_json, "w"), indent=1, ensure_ascii=False)
 
 
