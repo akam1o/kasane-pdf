@@ -3,7 +3,9 @@
 real-world corpus (compat/corpus, see docs/compat-corpus.md).
 
 The corpus has no redaction ground truth, so rects are generated from
-the page itself (page 1 only), three kinds per file:
+the page itself (page 1 only; with `--pages spread`, also the middle
+and last pages: an added set, its runs keyed by page), three kinds per
+file:
 
 - word:  the box of a word of four or more letters near the middle of
          the page's text (Poppler `pdftotext -bbox`), padded 0.5 pt;
@@ -78,6 +80,9 @@ would not map 1:1. Usage:
 
     scripts/eval-redact-corpus.py <kasane-pdf> [--per-category N] [--json out.json]
         [--redact-arg ARG …]   (passed to `redact`, e.g. --remove-annotations)
+        [--pages first|spread] (first: page 1, the default; spread: page 1,
+                                the middle and the last page, each run
+                                recording its page)
 """
 
 import collections
@@ -99,6 +104,8 @@ CORPUS = os.environ.get("KASANE_CORPUS_DIR") or os.path.join(ROOT, "compat", "co
 MANIFEST = os.path.join(ROOT, "compat", "manifest.yaml")
 DPI = 100
 TOOL_TIMEOUT = 120
+# The page evaluated (1 unless --pages spread sets each in turn).
+PAGE = 1
 # The states of a text measurement and the reasons of the ones that are
 # not measurements (closed vocabularies: they are published).
 TEXT_STATES = ("success", "empty", "error", "timeout", "incomplete", "incomparable")
@@ -175,13 +182,13 @@ def path_of(f):
 
 
 def plain_geometry(pdf):
-    """(width, height) when page 1 is plain MediaBox space, else None."""
-    r = subprocess.run(["pdfinfo", "-box", "-f", "1", "-l", "1", pdf], capture_output=True, text=True)
+    """(width, height) when the page is plain MediaBox space, else None."""
+    r = subprocess.run(["pdfinfo", "-box", "-f", str(PAGE), "-l", str(PAGE), pdf], capture_output=True, text=True)
     if r.returncode != 0:
         return None
-    rot = re.search(r"Page\s+1 rot:\s+(\d+)", r.stdout)
-    mb = re.search(r"Page\s+1 MediaBox:\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)", r.stdout)
-    cb = re.search(r"Page\s+1 CropBox:\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)", r.stdout)
+    rot = re.search(rf"Page\s+{PAGE} rot:\s+(\d+)", r.stdout)
+    mb = re.search(rf"Page\s+{PAGE} MediaBox:\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)", r.stdout)
+    cb = re.search(rf"Page\s+{PAGE} CropBox:\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)", r.stdout)
     if not (rot and mb and cb) or rot.group(1) != "0":
         return None
     m = [float(v) for v in mb.groups()]
@@ -222,8 +229,8 @@ def parse_bbox(data, height):
 
 
 def poppler_words(pdf, height):
-    """Page-1 words by Poppler (`pdftotext -bbox`), as a measurement."""
-    st, why, data = run_tool([tool("pdftotext"), "-bbox", "-f", "1", "-l", "1", pdf, "-"])
+    """The page's words by Poppler (`pdftotext -bbox`), as a measurement."""
+    st, why, data = run_tool([tool("pdftotext"), "-bbox", "-f", str(PAGE), "-l", str(PAGE), pdf, "-"])
     if st:
         return measure(st, why)
     return parse_bbox(data, height)
@@ -279,8 +286,8 @@ def parse_stext(data, size):
 
 
 def mupdf_chars(pdf, size):
-    """Page-1 characters by MuPDF, as a measurement (see parse_stext)."""
-    st, why, data = run_tool([tool("mutool"), "draw", "-q", "-F", "stext", "-o", "-", pdf, "1"])
+    """The page's characters by MuPDF, as a measurement (see parse_stext)."""
+    st, why, data = run_tool([tool("mutool"), "draw", "-q", "-F", "stext", "-o", "-", pdf, str(PAGE)])
     if st:
         return measure(st, why)
     return parse_stext(data, size)
@@ -293,17 +300,17 @@ def page_count(pdf):
 
 
 def image_digests(pdf, tmp, tag):
-    """Digests of page 1's images as stored (`pdfimages -all`)."""
+    """Digests of the page's images as stored (`pdfimages -all`)."""
     import hashlib
     d = os.path.join(tmp, "img-" + tag)
     os.makedirs(d, exist_ok=True)
-    subprocess.run(["pdfimages", "-all", "-f", "1", "-l", "1", pdf, os.path.join(d, "i")], capture_output=True)
+    subprocess.run(["pdfimages", "-all", "-f", str(PAGE), "-l", str(PAGE), pdf, os.path.join(d, "i")], capture_output=True)
     return collections.Counter(hashlib.sha256(open(os.path.join(d, f), "rb").read()).hexdigest()
                                for f in sorted(os.listdir(d)))
 
 
 def render(pdf, base):
-    subprocess.run(["pdftoppm", "-r", str(DPI), "-gray", "-f", "1", "-l", "1", "-singlefile", pdf, base],
+    subprocess.run(["pdftoppm", "-r", str(DPI), "-gray", "-f", str(PAGE), "-l", str(PAGE), "-singlefile", pdf, base],
                    capture_output=True, check=True)
     data = open(base + ".pgm", "rb").read()
     parts = data.split(maxsplit=4)
@@ -380,7 +387,7 @@ def run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args=()):
     out = os.path.join(tmp, "out.pdf")
     if os.path.exists(out):
         os.remove(out)
-    args = [kasane, "redact", pdf, "--page", "1", "--rect"] + [f"{v:.3f}" for v in rect] + list(extra_args) + ["--output", out]
+    args = [kasane, "redact", pdf, "--page", str(PAGE), "--rect"] + [f"{v:.3f}" for v in rect] + list(extra_args) + ["--output", out]
     t0 = time.monotonic()
     r = subprocess.run(args, capture_output=True, text=True, timeout=600)
     res = {"kind": kind, "rect": [round(v, 2) for v in rect], "seconds": round(time.monotonic() - t0, 3)}
@@ -419,6 +426,11 @@ def run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args=()):
         incomplete = []
         if n_in != n_out:
             problems.append("the page count changed")
+    if n_out is not None and PAGE > n_out:
+        # The page evaluated is gone: nothing more can be measured.
+        problems.append(f"page {PAGE} is not in the output")
+        res.update(outcome="unexpected", reason="; ".join(problems))
+        return res
     # Each measurement on its own: one engine's success never stands in
     # for the other's failure.
     out_pop = poppler_words(out, size[1])
@@ -549,6 +561,7 @@ def main():
     per_category = 4
     out_json = None
     extra_args = []
+    pages_mode = "first"
     a = sys.argv[2:]
     while a:
         if a[0] == "--per-category":
@@ -557,6 +570,8 @@ def main():
             out_json = a[1]; a = a[2:]
         elif a[0] == "--redact-arg":
             extra_args.append(a[1]); a = a[2:]
+        elif a[0] == "--pages" and a[1:2] and a[1] in ("first", "spread"):
+            pages_mode = a[1]; a = a[2:]
         else:
             sys.exit(f"unknown argument {a[0]}")
     # MuPDF is a required witness, not an optional one: without it the
@@ -571,19 +586,32 @@ def main():
         if pdf is None:
             skipped.append((f["id"], "not fetched"))
             continue
-        size = plain_geometry(pdf)
-        if size is None:
-            skipped.append((f["id"], "page geometry not plain MediaBox space"))
-            continue
-        in_pop, in_mu = input_measures(pdf, size)
-        rects, _ = rects_for(pdf, size, in_pop.get("words") or [])
-        for kind, rect in rects:
-            with tempfile.TemporaryDirectory() as tmp:
-                res = run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args)
-            res.update(id=f["id"], category=f["category"], producer=f.get("producer"))
-            results.append(res)
-            extra = res.get("reason", "")
-            print(f"{res['outcome']:<10} {f['category']:<12} {f['id'][:40]:<40} {kind:<5} {extra[:110]}")
+        if pages_mode == "first":
+            pages = [1]
+        else:
+            n = page_count(pdf)
+            if not n:
+                skipped.append((f["id"], "page count unknown"))
+                continue
+            pages = sorted({1, (n + 1) // 2, n})
+        global PAGE
+        for PAGE in pages:
+            size = plain_geometry(pdf)
+            if size is None:
+                skipped.append((f["id"] if pages_mode == "first" else f"{f['id']}#{PAGE}",
+                                "page geometry not plain MediaBox space"))
+                continue
+            in_pop, in_mu = input_measures(pdf, size)
+            rects, _ = rects_for(pdf, size, in_pop.get("words") or [])
+            for kind, rect in rects:
+                with tempfile.TemporaryDirectory() as tmp:
+                    res = run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args)
+                res.update(id=f["id"], category=f["category"], producer=f.get("producer"))
+                if pages_mode != "first":
+                    res["page"] = PAGE
+                results.append(res)
+                extra = res.get("reason", "")
+                print(f"{res['outcome']:<10} {f['category']:<12} {f['id'][:40]:<40} {kind:<5} {extra[:110]}")
     counts = collections.Counter(r["outcome"] for r in results)
     reasons = collections.Counter(r["reason"] for r in results if r["outcome"] == "refused")
     files_ok = len({r["id"] for r in results if r["outcome"] == "ok"})
@@ -593,7 +621,7 @@ def main():
         print(f"  {k:<10} {counts.get(k, 0)}")
     # Every run is counted once, in exactly one of the four outcomes:
     # a run counted twice, or in none, makes the tallies above a lie.
-    keys = collections.Counter((r["id"], r["kind"]) for r in results)
+    keys = collections.Counter((r["id"], r.get("page", 1), r["kind"]) for r in results)
     twice = sorted(k for k, n in keys.items() if n > 1)
     other = sorted({r["outcome"] for r in results} - {"ok", "refused", "unexpected", "incomplete"})
     if twice or other or sum(counts.values()) != len(results):
@@ -627,7 +655,10 @@ def main():
     for i, why in skipped:
         print(f"skipped {i}: {why}")
     if out_json:
-        json.dump({"results": results, "skipped": skipped}, open(out_json, "w"), indent=1)
+        doc = {"results": results, "skipped": skipped}
+        if pages_mode != "first":
+            doc["pages"] = pages_mode
+        json.dump(doc, open(out_json, "w"), indent=1)
     sys.exit(1 if counts.get("unexpected") or counts.get("incomplete") else 0)
 
 

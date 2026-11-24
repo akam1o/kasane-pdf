@@ -74,7 +74,8 @@ def main():
             i += 1
     binary, eval_json = rest
     walk_args = [a for a in extra if a == "--embed-substitute-fonts"]
-    results = json.load(open(eval_json))["results"]
+    report = json.load(open(eval_json))
+    results = report["results"]
     runs = []
     for r in results:
         if r.get("outcome") != "refused":
@@ -83,7 +84,8 @@ def main():
         if not os.path.isfile(pdf):
             pdf = os.path.join(CORPUS, r["id"])
         rect = [str(v) for v in r["rect"]]
-        p = subprocess.run([binary, "redact", pdf, "--page", "1", "--rect", *rect, *walk_args, "--explain"],
+        page = str(r.get("page", 1))
+        p = subprocess.run([binary, "redact", pdf, "--page", page, "--rect", *rect, *walk_args, "--explain"],
                            capture_output=True, text=True)
         findings = []
         if p.returncode == 0:
@@ -96,7 +98,7 @@ def main():
         cats = sorted({f["category"] for f in findings})
         from_walk = r["reason"].startswith("region removal on a page with")
         runs.append({
-            "id": r["id"], "kind": r["kind"], "rect": r["rect"],
+            "id": r["id"], "kind": r["kind"], "rect": r["rect"], **({"page": r["page"]} if "page" in r else {}),
             "first_reason": r["reason"], "first_detail": r.get("detail", "")[:200],
             "refused_by_walk": from_walk, "walk_error": walk_error,
             "walk_categories": cats,
@@ -130,7 +132,10 @@ def main():
     for k, n in by_reason.most_common():
         print(f"  {n:4}  {k}")
     if out_json:
-        json.dump({"summary": summary, "runs": runs}, open(out_json, "w"), indent=1, ensure_ascii=False)
+        doc = {"summary": summary, "runs": runs}
+        if "pages" in report:
+            doc["pages"] = report["pages"]
+        json.dump(doc, open(out_json, "w"), indent=1, ensure_ascii=False)
 
 
 if __name__ == "__main__":
