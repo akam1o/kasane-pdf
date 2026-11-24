@@ -402,16 +402,38 @@ pub fn redact(
     redact_doc(doc, specs, options, 0)
 }
 
+/// A literal string holding an unescaped CR is a line feed here and a
+/// CR to some readers: written out it changes for them (a palette, a
+/// font name, a field value), so a document where one was read is
+/// refused.
+fn raw_cr_refusal(doc: &Document) -> Result<(), Error> {
+    if doc.raw_cr_object_strings() > 0 {
+        return Err(Error::Unsupported {
+            feature: "redaction of a document with an unescaped carriage return in a string",
+            detail: format!(
+                "{} literal string(s) — readers do not agree on their bytes",
+                doc.raw_cr_object_strings()
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Whether the catalog's `/Perms` names `/UR` or `/UR3`: only then is
 /// the removal assessed (a document without one is redacted as without
 /// the option, its refusals included). Unreadable: no (the redaction's
 /// own signature refusal reads it again).
 fn names_usage_rights(doc: &Document) -> bool {
-    doc.catalog()
-        .get(b"Perms".as_slice())
-        .and_then(|p| crate::rewrite::deref_chain(doc, p).ok())
-        .and_then(|p| p.as_dict().cloned())
-        .is_some_and(|p| p.contains_key(b"UR".as_slice()) || p.contains_key(b"UR3".as_slice()))
+    // Read without leaving anything on the document (reference budget,
+    // object stream cache): without a usage-rights signature, the option
+    // changes nothing.
+    doc.without_side_effects(|| {
+        doc.catalog()
+            .get(b"Perms".as_slice())
+            .and_then(|p| crate::rewrite::deref_chain(doc, p).ok())
+            .and_then(|p| p.as_dict().cloned())
+            .is_some_and(|p| p.contains_key(b"UR".as_slice()) || p.contains_key(b"UR3".as_slice()))
+    })
 }
 
 /// [`UsageRightsPolicy::Remove`](crate::UsageRightsPolicy::Remove):
@@ -437,6 +459,12 @@ fn redact_without_usage_rights(
     // Only the signatures are cut: everything else is carried as it is,
     // scripts included, for the redaction to apply its own policy.
     let (bytes, map, _) = crate::rewrite::rewrite_mapped(doc, limits, true, &overlay, true)?;
+    // The rewrite read every object it carries: a literal string with an
+    // unescaped carriage return there is refused here, on the signed
+    // input, as the redaction refuses it on its own input (the
+    // intermediate document holds the string as it was read, no longer
+    // as written).
+    raw_cr_refusal(doc)?;
     let written = map.keys().copied().collect();
     let check = doc.without_side_effects(|| {
         crate::usage_rights::check_output(doc, Some(&plan), &bytes, &written, limits)
@@ -625,15 +653,7 @@ fn redact_doc(
     // holding an unescaped CR is a line feed here and a CR to some
     // readers: written out it changes for them (a palette, a font
     // name, a field value), so the document is refused.
-    if doc.raw_cr_object_strings() > 0 {
-        return Err(Error::Unsupported {
-            feature: "redaction of a document with an unescaped carriage return in a string",
-            detail: format!(
-                "{} literal string(s) — readers do not agree on their bytes",
-                doc.raw_cr_object_strings()
-            ),
-        });
-    }
+    raw_cr_refusal(doc)?;
 
     // An original may stay only as an object the output still draws
     // (from a page, through forms); each such display is reported.

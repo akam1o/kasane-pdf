@@ -383,7 +383,9 @@ fn scripts_follow_the_redaction_policy() {
     assert_eq!(e1, e2);
     let r = run(&b, &remove().remove_javascript(true)).unwrap();
     assert!(r.javascript_removed > 0 && r.usage_rights_removed.is_some());
-    assert!(!contains(&r.output, b"app.alert") && !contains(&r.output, b"/ByteRange"));
+    let out = Document::from_bytes(&r.output).unwrap();
+    assert!(!out.catalog().contains_key(b"OpenAction".as_slice()));
+    assert!(!contains(&r.output, b"/ByteRange") && !contains(&r.output, b"/JavaScript"));
 }
 
 /// With the substitute fonts too (a third step): the same result.
@@ -465,4 +467,121 @@ fn a_shared_image_across_the_removal() {
         "page 2 still draws the original"
     );
     assert_eq!(Document::from_bytes(&r.output).unwrap().pages().len(), 2);
+}
+
+/// The `/Perms` shapes end to end: `/UR` and `/UR3` together, direct
+/// signature dictionaries, an indirect `/Perms`, another entry kept.
+#[test]
+fn perms_shapes_end_to_end() {
+    let ur = UR3.replace("/TransformMethod /UR3", "/TransformMethod /UR");
+    let both = doc(
+        "/Perms 30 0 R",
+        "",
+        TEXT,
+        vec![(30, o(&format!("<< /UR {ur} /UR3 {UR3} >>")))],
+    );
+    let r = run(&both, &remove()).unwrap();
+    let u = r.usage_rights_removed.unwrap();
+    let keys: Vec<_> = u.entries.iter().map(|e| (e.key, e.input_object)).collect();
+    assert_eq!(
+        keys,
+        [(UsageRightsKey::Ur, None), (UsageRightsKey::Ur3, None)]
+    );
+    assert!(u.perms_removed && !contains(&r.output, b"/Perms"));
+    assert!(!text(&r.output, 0).contains("SECRET"));
+    // Another entry stays, in a direct or an indirect /Perms.
+    for (cat, extra) in [
+        ("/Perms << /UR3 10 0 R /X 5 >>", vec![(10, o(UR3))]),
+        (
+            "/Perms 30 0 R",
+            vec![(10, o(UR3)), (30, o("<< /UR3 10 0 R /X 5 >>"))],
+        ),
+    ] {
+        let r = run(&doc(cat, "", TEXT, extra), &remove()).unwrap();
+        assert!(!r.usage_rights_removed.unwrap().perms_removed);
+        let out = Document::from_bytes(&r.output).unwrap();
+        let p = out
+            .deref(out.catalog().get(b"Perms".as_slice()).unwrap())
+            .unwrap();
+        let p = p.as_dict().unwrap();
+        assert_eq!(
+            (p.len(), p.get(b"X".as_slice())),
+            (1, Some(&kasane_pdf::Object::Integer(5))),
+            "{cat}"
+        );
+    }
+}
+
+/// A literal string with an unescaped carriage return (readers disagree
+/// on its bytes) refuses with the option as without it: the removal's
+/// rewrite must not turn it into a plain line feed the redaction then
+/// accepts.
+#[test]
+fn a_raw_carriage_return_still_refuses() {
+    let field = |cat: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut extra = extra;
+        extra.push((
+            11,
+            b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /V (A\rB) /Rect [150 10 190 30] /P 3 0 R >>"
+                .to_vec(),
+        ));
+        doc(
+            &format!("{cat} /AcroForm << /Fields [11 0 R] >>"),
+            "/Annots [11 0 R]",
+            TEXT,
+            extra,
+        )
+    };
+    let plain = field("", vec![]);
+    let e = format!("{:?}", run(&plain, &RedactOptions::new()).unwrap_err());
+    assert!(e.contains("carriage return"), "{e}");
+    let signed = field("/Perms << /UR3 10 0 R >>", vec![(10, o(UR3))]);
+    let e = format!("{:?}", run(&signed, &remove()).unwrap_err());
+    assert!(e.contains("carriage return"), "{e}");
+}
+
+/// Without a usage-rights signature the option reads nothing it leaves a
+/// trace of: at the smallest reference budget (cumulative over the
+/// document) with which an indirect `/Perms` document redacts, it
+/// redacts with the option too, to the same bytes.
+#[test]
+fn the_gate_leaves_no_trace() {
+    let b = doc("/Perms 30 0 R", "", TEXT, vec![(30, o("<< /X 5 >>"))]);
+    let at = |n: u64, opts: RedactOptions| {
+        let lim = Limits::default().with_max_reference_depth(n);
+        let d = Document::from_bytes_with_limits(&b, lim.clone())?;
+        redact(&d, &[(0, vec![RECT])], &opts.with_limits(lim)).map(|r| r.output)
+    };
+    let n = (1..100_000u64)
+        .find(|&n| at(n, RedactOptions::new()).is_ok())
+        .expect("redacts with some budget");
+    assert!(at(n - 1, RedactOptions::new()).is_err());
+    assert_eq!(
+        at(n, remove()).unwrap(),
+        at(n, RedactOptions::new()).unwrap()
+    );
+}
+
+/// The removal's search budget: the rewrite fits, the search of every
+/// value does not — refused, not cut short.
+#[test]
+fn the_search_budget_refuses() {
+    let many = format!("/Perms << /UR3 10 0 R >> /X [{}]", "1 ".repeat(5000));
+    let b = doc(&many, "", TEXT, vec![(10, o(UR3))]);
+    let lim = Limits::default().with_max_output_objects(40);
+    assert!(rewrite_with(
+        &Document::from_bytes(&doc(
+            &format!("/X [{}]", "1 ".repeat(5000)),
+            "",
+            TEXT,
+            vec![]
+        ))
+        .unwrap(),
+        &RewriteOptions::new().with_limits(lim.clone())
+    )
+    .is_ok());
+    assert_eq!(
+        sig_rule(run(&b, &remove().with_limits(lim))),
+        SignatureRule::UsageRightsNotRemovable
+    );
 }

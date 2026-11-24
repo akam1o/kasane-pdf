@@ -1028,6 +1028,20 @@ pub(crate) fn check_redacted(
     if s.locks > 0 {
         return Err(residual("a field /Lock"));
     }
+    // /Perms: gone when the removal emptied it; else exactly the entries
+    // the removal left (same keys; a direct value equal, a reference
+    // still a reference — numbers differ after the rewrites).
+    let left_in: Vec<(Vec<u8>, Object)> = match input.catalog().get(b"Perms".as_slice()) {
+        Some(p) => match deref_chain(input, p) {
+            Ok(Object::Dict(d)) => d
+                .iter()
+                .filter(|(k, _)| !plan.targets.iter().any(|t| t.key.name() == k.as_slice()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            _ => return Err(residual("the input /Perms cannot be read")),
+        },
+        None => Vec::new(),
+    };
     match out.catalog().get(b"Perms".as_slice()) {
         None if plan.perms_left == 0 => {}
         None => return Err(residual("/Perms is gone though it held more")),
@@ -1043,34 +1057,42 @@ pub(crate) fn check_redacted(
             {
                 return Err(residual("/Perms still has /UR, /UR3 or /DocMDP"));
             }
-            if left.len() != plan.perms_left {
+            let same = left.len() == left_in.len()
+                && left_in
+                    .iter()
+                    .all(|(k, v)| match (v, left.get(k.as_slice())) {
+                        (Object::Ref(_), Some(Object::Ref(_))) => true,
+                        (Object::Ref(_), _) | (_, None) => false,
+                        (v, Some(w)) => v == w,
+                    });
+            if !same {
                 return Err(residual("/Perms does not hold what was left in it"));
             }
         }
     }
-    let sig_flags = |d: &Document| -> Result<Option<i64>, Error> {
-        let Some(af) = d.catalog().get(b"AcroForm".as_slice()) else {
-            return Ok(None);
+    // /SigFlags: exactly as the removal set it on a form the output keeps
+    // (a form the redaction removed has none).
+    if let Some(af) = out.catalog().get(b"AcroForm".as_slice()) {
+        let Object::Dict(af) =
+            deref_chain(out, af).map_err(|_| residual("/AcroForm cannot be read"))?
+        else {
+            return Err(residual("/AcroForm is not a dictionary"));
         };
-        let Object::Dict(af) = deref_chain(d, af)? else {
-            return Ok(None);
-        };
-        Ok(match af.get(b"SigFlags".as_slice()) {
+        let got = match af.get(b"SigFlags".as_slice()) {
             None => None,
-            Some(f) => match deref_chain(d, f)? {
-                Object::Integer(v) => Some(v),
-                Object::Null => Some(0),
-                _ => None,
-            },
-        })
-    };
-    let got = sig_flags(out).map_err(|_| residual("/SigFlags cannot be read"))?;
-    if let Some(got) = got {
+            Some(f) => {
+                match deref_chain(out, f).map_err(|_| residual("/SigFlags cannot be read"))? {
+                    Object::Integer(v) => Some(v),
+                    Object::Null => Some(0),
+                    _ => return Err(residual("/SigFlags is not an integer")),
+                }
+            }
+        };
         let want = match plan.sig_flags {
             Some((_, after, _)) => Some(after),
             None => plan.sig_flags_read,
         };
-        if Some(got) != want || got & 1 != 0 {
+        if got != want || got.is_some_and(|f| f & 1 != 0) {
             return Err(residual("/AcroForm /SigFlags is not as declared"));
         }
     }
@@ -1260,6 +1282,29 @@ mod tests {
     /// `/SigFlags` other than declared, or another page count; it
     /// accepts the clean one.
     #[test]
+    fn check_redacted_compares_kept_perms_entries() {
+        let input = doc(
+            "/Perms << /UR3 10 0 R /X 5 /Y 11 0 R >>",
+            "",
+            &[(10, UR3), (11, "<< >>")],
+        );
+        let plan = assess(&input, &Limits::default()).unwrap().unwrap();
+        let ok = |cat: &str, objs: &[(u32, &str)]| {
+            check_redacted(&input, &doc(cat, "", objs), &plan, &Limits::default())
+        };
+        assert!(ok("/Perms << /X 5 /Y 12 0 R >>", &[(12, "<< >>")]).is_ok());
+        for cat in [
+            "/Perms << /X 6 /Y 12 0 R >>",
+            "/Perms << /X 5 /Z 12 0 R >>",
+            "/Perms << /X 5 /Y << >> >>",
+            "/Perms << /X 5 >>",
+            "",
+        ] {
+            assert!(ok(cat, &[(12, "<< >>")]).is_err(), "{cat}");
+        }
+    }
+
+    #[test]
     fn check_redacted_refuses_what_is_left() {
         let input = doc(
             "/Perms << /UR3 10 0 R >> /AcroForm << /Fields [] /SigFlags 3 >>",
@@ -1288,6 +1333,20 @@ mod tests {
             (
                 "/AcroForm << /Fields [10 0 R] /SigFlags 2 >>",
                 vec![(10, "<< /FT /Sig /T (x) /Lock << /Action /All >> >>")],
+            ),
+            // A bare /ByteRange; the kept form without its flags, or
+            // with malformed ones.
+            ("/X << /ByteRange [0 1 2 3] >>", vec![]),
+            ("/AcroForm << /Fields [] >>", vec![]),
+            ("/AcroForm << /Fields [] /SigFlags /Two >>", vec![]),
+            ("/AcroForm 10 0 R", vec![(10, "[1 2]")]),
+            // Another page count.
+            (
+                "/AcroForm << /Fields [] /SigFlags 2 >>",
+                vec![
+                    (2, "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>"),
+                    (4, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>"),
+                ],
             ),
         ] {
             assert!(
@@ -1319,7 +1378,10 @@ mod tests {
                 format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] {page} >>"),
             ),
         ];
+        // An object numbered 1–3 in `objs` replaces the built-in one.
+        all.retain(|(n, _)| !objs.iter().any(|(m, _)| m == n));
         all.extend(objs.iter().map(|(n, b)| (*n, b.to_string())));
+        all.sort_by_key(|(n, _)| *n);
         let mut out = b"%PDF-1.7\n".to_vec();
         let size = all.iter().map(|o| o.0).max().unwrap() + 1;
         let mut offs = vec![None; size as usize];
