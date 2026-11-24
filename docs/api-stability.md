@@ -135,6 +135,16 @@ rustdoc JSON.
   class of input is refused with `max_pattern_tiles`, and `rewrite`
   carries `/OCProperties`.
 
+## 0.13.1 (security fix)
+
+- No signature changes (`cargo semver-checks` against 0.13.0).
+- Behaviour: `redact` refuses a page whose content, forms or the
+  appearances of the annotations it keeps draw an inline image, or that shows a Type 3 glyph drawing
+  one, wherever the image lies (it kept one away from the rects); the
+  error is `Error::Unsupported`. A security fix, released as a patch as
+  earlier security fixes with behaviour changes were (0.5.2, 0.6.1,
+  0.6.2); no other behaviour changes.
+
 ## 0.13.0 (behaviour)
 
 - No signature changes: no public item is added, removed or changed

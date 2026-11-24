@@ -1020,36 +1020,8 @@
    "renderers": {}
   },
   "vr:inline-image-outside": {
-   "outcome": "ok",
-   "renderers": {
-    "mupdf": {
-     "antialias": 0,
-     "changed": 0,
-     "font_substitution": 0,
-     "ink_left_not_judged": 0,
-     "public_lost": false,
-     "secret_extracted": false,
-     "snap": 0
-    },
-    "pdfjs": {
-     "antialias": 0,
-     "changed": 0,
-     "font_substitution": 0,
-     "ink_left_not_judged": 0,
-     "public_lost": false,
-     "secret_extracted": false,
-     "snap": 0
-    },
-    "poppler": {
-     "antialias": 0,
-     "changed": 0,
-     "font_substitution": 0,
-     "ink_left_not_judged": 0,
-     "public_lost": false,
-     "secret_extracted": false,
-     "snap": 0
-    }
-   }
+   "outcome": "refused",
+   "renderers": {}
   },
   "vr:invisible-ocr-text": {
    "outcome": "ok",
@@ -1642,7 +1614,7 @@
  },
  "dpi": 72,
  "platform": "darwin-arm64",
- "reason": "adds the three GHSA-4q38-qhh6-c256 advisory inputs (refused); the 110 earlier cases unchanged",
+ "reason": "adds the three GHSA-4q38-qhh6-c256 advisory inputs (refused); the 110 earlier cases unchanged; vr:inline-image-outside is now refused (0.13.1: an inline image refuses its page wherever it lies), so no renderer judges an output",
  "schema_version": 1,
  "tools": {
   "mupdf": "1.28.6",

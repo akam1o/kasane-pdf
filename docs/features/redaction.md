@@ -168,8 +168,10 @@ secret; the rest must be refused with no file written.
 On an edited page: annotations other than links meeting a rect,
 NoZoom, NoRotate or `/FixedPrint` annotations and Text annotations
 (whose icon behaves as NoZoom and NoRotate) not removed, forms nested more
-than 16 deep or cyclic, inline images meeting a rect
-(or whose data length is not fixed by their dictionary), `sh` crossing a rect, unbounded, in a
+than 16 deep or cyclic, inline images (wherever they lie: in the page's
+content, the forms it draws, the appearances of its annotations, or a
+Type 3 glyph's procedure — readers do not all end their data alike),
+`sh` crossing a rect, unbounded, in a
 form or reached from elsewhere, tiling patterns painting across a rect, in a form, under text
 meeting a rect or reached from elsewhere,
 ExtGState with a soft mask or `/Font`, literal strings holding an
@@ -403,7 +405,8 @@ Each of these is refused with a typed error, not approximated:
 - **Images**: masked (other than an 8-bit grey soft mask), four-component
   JPEGs, JBIG2 with `/JBIG2Globals` or a file header,
   rotated or sheared, with `/Alternates` or OPI, and inline images
-  meeting a rect. (`/Interpolate` and `/OC` on an image are accepted:
+  anywhere on an edited page or in a Type 3 glyph it shows (readers do
+  not all end their data alike). (`/Interpolate` and `/OC` on an image are accepted:
   they do not change which samples are drawn where.)
 - **Paint**: shadings (`sh`) crossing a rect other than the axial
   ones the table describes, and tiling patterns crossing a rect other

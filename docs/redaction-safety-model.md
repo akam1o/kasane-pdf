@@ -40,7 +40,10 @@ property cannot be decided).
   except an axial shading's axis and band, kept whole under a clip away
   from the rects or as a pattern colour (**N** below).
 - **X** — Where kasane's reading of what is drawn can differ from a
-  reader's: unescaped carriage returns in strings, CMap constructions
+  reader's: unescaped carriage returns in strings, inline images (in
+  the content an edited page draws, its annotations' appearances and
+  the Type 3 glyphs it shows: readers do not all end their data where
+  kasane does), CMap constructions
   Poppler, MuPDF and pdf.js read differently (definition order, code
   length, bf mappings in an encoding CMap, definitions after
   `endcmap`, Identity pass-through, `/WMode` conflicts, odd-length hex

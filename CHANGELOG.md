@@ -6,6 +6,20 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-25
+
+A security fix for `redact`; no public API change. Release notes:
+`docs/releases/v0.13.1.md`.
+
+### Security
+- This version fixes a security issue in redaction. An advisory with the
+  details will be published once it is available on crates.io;
+  upgrading is recommended for every application that uses `redact`.
+  `redact` now refuses a page whose content, forms, the appearances of
+  the annotations it keeps or Type 3 glyphs draw an inline image (`BI … ID … EI`),
+  wherever the image lies: readers do not all end inline image data
+  where kasane does.
+
 ## [0.13.0] - 2026-11-23
 
 ### Security
@@ -1519,7 +1533,8 @@ are possible between minor versions and are recorded here.
   1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
   `docs/third-party.md`).
 
-[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/akam1o/kasane-pdf/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/akam1o/kasane-pdf/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.12.0
 [0.11.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.11.0
