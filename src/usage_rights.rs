@@ -72,7 +72,7 @@ pub(crate) struct Scan {
     pub values: usize,
 }
 
-fn not_removable(detail: impl Into<String>) -> Error {
+pub(crate) fn not_removable(detail: impl Into<String>) -> Error {
     Error::SignaturePolicy {
         rule: SignatureRule::UsageRightsNotRemovable,
         detail: detail.into(),
@@ -1003,6 +1003,83 @@ pub(crate) fn check_output(
     })
 }
 
+/// A redaction's output `out` of the document `input` whose usage-rights
+/// signatures `plan` removed (then redacted, which rewrites every object
+/// and may edit the catalog and the form): no signature-like dictionary,
+/// `/ByteRange` or field `/Lock` anywhere — the plan allowed none but
+/// the removed ones —, `/Perms` without `/UR`, `/UR3` or `/DocMDP` and
+/// holding what the removal left, `/AcroForm /SigFlags` as the removal
+/// set it when the form is still there. Any failure is
+/// [`SignatureRule::ResidualSignature`].
+pub(crate) fn check_redacted(
+    input: &Document,
+    out: &Document,
+    plan: &Plan,
+    limits: &Limits,
+) -> Result<(), Error> {
+    let s =
+        scan(out, limits).map_err(|_| residual("the output could not be searched completely"))?;
+    if s.signature_like > 0 || s.byte_ranges > 0 {
+        return Err(residual(format_args!(
+            "{} signature-like dictionar(ies), {} with /ByteRange",
+            s.signature_like, s.byte_ranges
+        )));
+    }
+    if s.locks > 0 {
+        return Err(residual("a field /Lock"));
+    }
+    match out.catalog().get(b"Perms".as_slice()) {
+        None if plan.perms_left == 0 => {}
+        None => return Err(residual("/Perms is gone though it held more")),
+        Some(_) if plan.perms_left == 0 => return Err(residual("/Perms is still there")),
+        Some(p) => {
+            let p = deref_chain(out, p).map_err(|_| residual("/Perms cannot be read"))?;
+            let Object::Dict(left) = p else {
+                return Err(residual("/Perms is not a dictionary"));
+            };
+            if [b"UR".as_slice(), b"UR3", b"DocMDP"]
+                .iter()
+                .any(|k| left.contains_key(*k))
+            {
+                return Err(residual("/Perms still has /UR, /UR3 or /DocMDP"));
+            }
+            if left.len() != plan.perms_left {
+                return Err(residual("/Perms does not hold what was left in it"));
+            }
+        }
+    }
+    let sig_flags = |d: &Document| -> Result<Option<i64>, Error> {
+        let Some(af) = d.catalog().get(b"AcroForm".as_slice()) else {
+            return Ok(None);
+        };
+        let Object::Dict(af) = deref_chain(d, af)? else {
+            return Ok(None);
+        };
+        Ok(match af.get(b"SigFlags".as_slice()) {
+            None => None,
+            Some(f) => match deref_chain(d, f)? {
+                Object::Integer(v) => Some(v),
+                Object::Null => Some(0),
+                _ => None,
+            },
+        })
+    };
+    let got = sig_flags(out).map_err(|_| residual("/SigFlags cannot be read"))?;
+    if let Some(got) = got {
+        let want = match plan.sig_flags {
+            Some((_, after, _)) => Some(after),
+            None => plan.sig_flags_read,
+        };
+        if Some(got) != want || got & 1 != 0 {
+            return Err(residual("/AcroForm /SigFlags is not as declared"));
+        }
+    }
+    if out.pages().len() != input.pages().len() {
+        return Err(residual("the page count differs from the input's"));
+    }
+    Ok(())
+}
+
 /// The report of a removal carried out under `plan`. Content-free.
 pub(crate) fn removal(
     doc: &Document,
@@ -1177,6 +1254,54 @@ mod tests {
     const UR3: &str = "<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached \
         /ByteRange [0 1 2 3] /Contents <0001> /Reference [<< /Type /SigRef /TransformMethod /UR3 \
         /TransformParams << /Type /TransformParams /Form [/FillIn] /V /2.2 >> >>] >>";
+
+    /// `check_redacted` refuses an output with any signature-like
+    /// dictionary, a `/ByteRange`, a `/Lock`, `/Perms` keys or a
+    /// `/SigFlags` other than declared, or another page count; it
+    /// accepts the clean one.
+    #[test]
+    fn check_redacted_refuses_what_is_left() {
+        let input = doc(
+            "/Perms << /UR3 10 0 R >> /AcroForm << /Fields [] /SigFlags 3 >>",
+            "",
+            &[(10, UR3)],
+        );
+        let plan = assess(&input, &Limits::default()).unwrap().unwrap();
+        let ok = |cat: &str, objs: &[(u32, &str)]| {
+            check_redacted(&input, &doc(cat, "", objs), &plan, &Limits::default())
+        };
+        assert!(ok("/AcroForm << /Fields [] /SigFlags 2 >>", &[]).is_ok());
+        assert!(ok("", &[]).is_ok(), "the form removed");
+        for (cat, objs) in [
+            ("/AcroForm << /Fields [] /SigFlags 3 >>", vec![]),
+            ("/AcroForm << /Fields [] /SigFlags 0 >>", vec![]),
+            (
+                "/Perms << >> /AcroForm << /Fields [] /SigFlags 2 >>",
+                vec![],
+            ),
+            ("/Perms << /UR3 10 0 R >>", vec![(10, UR3)]),
+            ("/X 10 0 R", vec![(10, UR3)]),
+            (
+                "/X << /ByteRange [0 1 2 3] /Contents <00> /Type /Sig >>",
+                vec![],
+            ),
+            (
+                "/AcroForm << /Fields [10 0 R] /SigFlags 2 >>",
+                vec![(10, "<< /FT /Sig /T (x) /Lock << /Action /All >> >>")],
+            ),
+        ] {
+            assert!(
+                matches!(
+                    ok(cat, &objs),
+                    Err(Error::SignaturePolicy {
+                        rule: SignatureRule::ResidualSignature,
+                        ..
+                    })
+                ),
+                "{cat}"
+            );
+        }
+    }
 
     /// Catalog entries `cat` (object 1), one page (3) with `page`, and
     /// `objs` from 10 on; a body `BROKEN` is unreadable.

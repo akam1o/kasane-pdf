@@ -59,6 +59,7 @@ pub struct RedactOptions {
     embed_substitute_fonts: bool,
     remove_javascript: bool,
     refuse_uninspected: bool,
+    usage_rights: crate::rewrite_policy::UsageRightsPolicy,
 }
 
 impl RedactOptions {
@@ -172,6 +173,29 @@ impl RedactOptions {
         self.embed_substitute_fonts = embed;
         self
     }
+
+    /// What to do with usage-rights signatures (`/Perms /UR`, `/UR3`):
+    /// by default ([`UsageRightsPolicy::Refuse`]) a document with one is
+    /// refused, like any signed document. With
+    /// [`UsageRightsPolicy::Remove`] they are removed first, exactly as
+    /// [`rewrite_with`](crate::rewrite_with) removes them — only a
+    /// signature confirmed as a usage-rights one, in a document with no
+    /// other signature, timestamp, XFA signature, field `/Lock`, `/DSS`
+    /// or `/Legal` (anything else refuses, as it does there) — and the
+    /// result is redacted. The extended reader rights they granted
+    /// (saving a filled form, commenting … in a reader that honours
+    /// them) are withdrawn: [`Redaction::usage_rights_removed`] says so.
+    /// Nothing is re-signed. The output is checked against the input it
+    /// was given: no signature-like dictionary, `/ByteRange` or `/Lock`
+    /// left, and the redaction's own use and non-interference checks.
+    /// An encrypted document with one is refused.
+    ///
+    /// [`UsageRightsPolicy::Refuse`]: crate::UsageRightsPolicy::Refuse
+    /// [`UsageRightsPolicy::Remove`]: crate::UsageRightsPolicy::Remove
+    pub fn with_usage_rights(mut self, policy: crate::rewrite_policy::UsageRightsPolicy) -> Self {
+        self.usage_rights = policy;
+        self
+    }
 }
 
 /// The result of [`redact`]: a verified single-revision PDF.
@@ -268,6 +292,11 @@ pub struct Redaction {
     /// the positional redaction does not touch. Review before
     /// distributing.
     pub residual: ResidualAudit,
+    /// The usage-rights signatures removed before redacting, with the
+    /// rights they granted (now withdrawn), when
+    /// [`RedactOptions::with_usage_rights`] asked for it and the input
+    /// had one; `None` otherwise (nothing removed).
+    pub usage_rights_removed: Option<crate::rewrite_policy::UsageRightsRemoval>,
 }
 
 /// Where removed text was found again in the output.
@@ -357,6 +386,11 @@ pub fn redact(
     options: &RedactOptions,
 ) -> Result<Redaction, Error> {
     options.limits.validate()?;
+    if options.usage_rights == crate::rewrite_policy::UsageRightsPolicy::Remove
+        && names_usage_rights(doc)
+    {
+        return redact_without_usage_rights(doc, specs, options);
+    }
     if options.embed_substitute_fonts {
         if let Some((bytes, n)) =
             crate::redact_fonts::embed_substitutes(doc, &options.limits, options.remove_javascript)?
@@ -366,6 +400,84 @@ pub fn redact(
         }
     }
     redact_doc(doc, specs, options, 0)
+}
+
+/// Whether the catalog's `/Perms` names `/UR` or `/UR3`: only then is
+/// the removal assessed (a document without one is redacted as without
+/// the option, its refusals included). Unreadable: no (the redaction's
+/// own signature refusal reads it again).
+fn names_usage_rights(doc: &Document) -> bool {
+    doc.catalog()
+        .get(b"Perms".as_slice())
+        .and_then(|p| crate::rewrite::deref_chain(doc, p).ok())
+        .and_then(|p| p.as_dict().cloned())
+        .is_some_and(|p| p.contains_key(b"UR".as_slice()) || p.contains_key(b"UR3".as_slice()))
+}
+
+/// [`UsageRightsPolicy::Remove`](crate::UsageRightsPolicy::Remove):
+/// the usage-rights signatures removed by `rewrite_with`'s assessed
+/// removal and checked by its output check (nothing else changed); that
+/// output, parsed again, redacted as asked; the redacted output checked
+/// against `doc` itself. What fails, at any step, refuses: the
+/// intermediate document is never returned. Each step runs within
+/// `options.limits` on its own, as the font embedding does.
+fn redact_without_usage_rights(
+    doc: &Document,
+    specs: &[PageSpec],
+    options: &RedactOptions,
+) -> Result<Redaction, Error> {
+    let limits = &options.limits;
+    if doc.is_encrypted() {
+        return Err(crate::incremental::encrypted_write_refused());
+    }
+    let plan = crate::usage_rights::assess(doc, limits)?.ok_or_else(|| {
+        crate::usage_rights::not_removable("/Perms names /UR or /UR3 but no signature was found")
+    })?;
+    let overlay = doc.without_side_effects(|| crate::usage_rights::overlay(doc, &plan))?;
+    // Only the signatures are cut: everything else is carried as it is,
+    // scripts included, for the redaction to apply its own policy.
+    let (bytes, map, _) = crate::rewrite::rewrite_mapped(doc, limits, true, &overlay, true)?;
+    let written = map.keys().copied().collect();
+    let check = doc.without_side_effects(|| {
+        crate::usage_rights::check_output(doc, Some(&plan), &bytes, &written, limits)
+    })?;
+    let removal = doc.without_side_effects(|| crate::usage_rights::removal(doc, &plan, check));
+    let unsigned = Document::from_bytes_with_limits(&bytes, limits.clone())?;
+    drop(bytes);
+    let inner = RedactOptions {
+        usage_rights: crate::rewrite_policy::UsageRightsPolicy::Refuse,
+        ..options.clone()
+    };
+    let mut r = redact(&unsigned, specs, &inner)?;
+    drop(unsigned);
+    verify_against_signed_input(doc, &r.output, specs, limits, &plan)?;
+    r.usage_rights_removed = Some(removal);
+    Ok(r)
+}
+
+/// The redacted output of [`redact_without_usage_rights`] against the
+/// signed input `doc`: no signature-like dictionary, `/ByteRange` or
+/// `/Lock` anywhere (the input had none but those removed), `/Perms`
+/// without `/UR`, `/UR3` or `/DocMDP`, `/SigFlags` as the removal set it;
+/// and the redaction's invariants that compare an input with an output
+/// (use, non-interference, removed annotations, reachability), with
+/// `doc` as the input.
+fn verify_against_signed_input(
+    doc: &Document,
+    output: &[u8],
+    specs: &[PageSpec],
+    limits: &Limits,
+    plan: &crate::usage_rights::Plan,
+) -> Result<(), Error> {
+    let out = Document::from_bytes_with_limits(output, limits.clone())?;
+    crate::usage_rights::check_redacted(doc, &out, plan, limits)?;
+    let idx = crate::redact_verify::Index::build(&out, limits)?;
+    let graph = crate::redact_verify::RefGraph::build(&out, &idx, limits)?;
+    crate::redact_verify::check_reachable(&idx, &graph)?;
+    let edited: BTreeSet<usize> = specs.iter().map(|(p, _)| *p).collect();
+    crate::redact_verify::check_use(doc, &out, &idx, &graph, &edited, limits)?;
+    crate::redact_verify::check_removed_annotations(doc, &out, &idx, &graph, &edited)?;
+    Ok(())
 }
 
 fn redact_doc(
@@ -645,6 +757,7 @@ fn redact_doc(
         thumbnails_removed: s.thumbnails_removed_total,
         fields_removed: forms.fields_removed,
         xfa_removed,
+        usage_rights_removed: None,
         residual,
     })
 }

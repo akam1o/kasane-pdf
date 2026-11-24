@@ -135,6 +135,17 @@ rustdoc JSON.
   class of input is refused with `max_pattern_tiles`, and `rewrite`
   carries `/OCProperties`.
 
+## Unreleased (additive)
+
+- `RedactOptions::with_usage_rights(UsageRightsPolicy)`: default
+  `Refuse` (the behaviour so far); `Remove` removes usage-rights
+  signatures before redacting (`docs/features/redaction.md`,
+  *Usage-rights signatures*). `RedactOptions`' fields are private, so
+  the new one breaks no caller.
+- `Redaction::usage_rights_removed: Option<UsageRightsRemoval>`
+  (`Redaction` is `#[non_exhaustive]`).
+- CLI `redact --remove-usage-rights`.
+
 ## 0.13.1 (security fix)
 
 - No signature changes (`cargo semver-checks` against 0.13.0).
