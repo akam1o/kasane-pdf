@@ -74,7 +74,8 @@ def main():
             i += 1
     binary, eval_json = rest
     walk_args = [a for a in extra if a == "--embed-substitute-fonts"]
-    results = json.load(open(eval_json))["results"]
+    report = json.load(open(eval_json))
+    results = report["results"]
     runs = []
     for r in results:
         if r.get("outcome") != "refused":
@@ -131,7 +132,10 @@ def main():
     for k, n in by_reason.most_common():
         print(f"  {n:4}  {k}")
     if out_json:
-        json.dump({"summary": summary, "runs": runs}, open(out_json, "w"), indent=1, ensure_ascii=False)
+        doc = {"summary": summary, "runs": runs}
+        if "pages" in report:
+            doc["pages"] = report["pages"]
+        json.dump(doc, open(out_json, "w"), indent=1, ensure_ascii=False)
 
 
 if __name__ == "__main__":
