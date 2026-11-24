@@ -1156,6 +1156,33 @@ fn nested_forms_and_form_images_are_redacted() {
     );
 }
 
+/// A form's text uses the font size and horizontal scaling it inherits
+/// from its `Do`: the removed text's positions fold with them, and what
+/// follows lands where it did.
+#[test]
+fn a_form_folds_positions_with_the_text_state_it_inherits() {
+    let origins = |pdf: &[u8]| -> Vec<(String, (f64, f64))> {
+        let doc = Document::from_bytes(pdf).unwrap();
+        extract_text(&doc, &doc.pages()[0], &TextOptions::default())
+            .unwrap()
+            .chars
+            .iter()
+            .filter_map(|c| Some((c.unicode.clone()?, c.origin)))
+            .collect()
+    };
+    let form = "BT 50 100 Td (SECRETTEXT) Tj 0 -40 Td [-500] TJ (PUBLICWORD) Tj ET";
+    for page in ["/F1 12 Tf 50 Tz /Fm Do", "q /F1 12 Tf 50 Tz q /Fm Do Q Q"] {
+        let pdf = form_page(page, "", form, vec![]);
+        let r = run(&pdf, vec![RECT]).unwrap();
+        assert_eq!((r.codes_removed, r.forms_edited), (10, 1), "{page}");
+        let before = origins(&pdf);
+        let after = origins(&r.output);
+        assert_eq!(after, before[10..], "{page}");
+        assert!((after[0].1 .0 - 53.0).abs() < 1e-6, "{page}: {after:?}");
+        assert!(!contains(&r.output, b"SECRETTEXT"));
+    }
+}
+
 /// An inline image refuses redaction on its page, away from the rects
 /// or meeting one: readers do not all end its data alike.
 #[test]

@@ -2550,9 +2550,29 @@ pub(crate) fn regions_edit_session_with<'a>(
                 BTreeMap::new();
             order.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
             for fp in order {
-                if !form_streams.contains_key(&fp) {
-                    let f = load_form_node(doc, page, &fp, limits)?;
-                    form_streams.insert(fp.clone(), f);
+                for k in 1..=fp.len() {
+                    if !form_streams.contains_key(&fp[..k]) {
+                        let f = load_form_node(doc, page, &fp[..k], limits)?;
+                        form_streams.insert(fp[..k].to_vec(), f);
+                    }
+                }
+                // The text state this invocation inherits: each stream of
+                // the chain up to its `Do`, from the page's.
+                let mut inherited = crate::redact_textpos::TextStart::PAGE;
+                for (k, frame) in fp.iter().enumerate() {
+                    let (parent_ops, parent_res) = match k {
+                        0 => (&ops[..], page.resources()),
+                        _ => {
+                            let n = &form_streams[&fp[..k]];
+                            (&n.ops[..], n.res.as_ref())
+                        }
+                    };
+                    inherited = crate::redact_textpos::text_state_at(
+                        parent_ops,
+                        frame.op_index,
+                        inherited,
+                        &|n| ext_gstate_keys(doc, parent_res, n),
+                    );
                 }
                 let node = &form_streams[&fp];
                 let mut new_form_ops: Vec<Operation> = Vec::with_capacity(node.ops.len());
@@ -2615,7 +2635,7 @@ pub(crate) fn regions_edit_session_with<'a>(
                     let res = node.res.clone().or_else(|| page.resources().cloned());
                     new_form_ops = crate::redact_textpos::fold_removed_positions(
                         &new_form_ops,
-                        crate::redact_textpos::TextStart::FORM,
+                        inherited,
                         &|n| ext_gstate_keys(doc, res.as_ref(), n),
                     )?;
                 }
