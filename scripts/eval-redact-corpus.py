@@ -342,7 +342,7 @@ def ink_rect(pdf, size, tmp):
     page's centre; None on a blank page."""
     try:
         w0, h0, a = render(pdf, os.path.join(tmp, "ink"))
-    except (ValueError, subprocess.CalledProcessError):
+    except (ValueError, OSError, subprocess.CalledProcessError):
         return None
     cx, cy = w0 / 2, h0 / 2
     best = None
@@ -468,6 +468,8 @@ def parse_pgm(data):
     if fields[0] != b"P5" or int(fields[3]) != 255:
         raise ValueError("not an 8-bit P5 PGM")
     w, h = int(fields[1]), int(fields[2])
+    if w <= 0 or h <= 0 or not data[i:i + 1].isspace():
+        raise ValueError("PGM header")
     raster = data[i + 1:]
     if len(raster) != w * h:
         raise ValueError("PGM raster length")
@@ -478,7 +480,7 @@ def pixel_checks(inp, out, rect, size, tmp):
     try:
         w0, h0, a = render(inp, os.path.join(tmp, "in"))
         w1, h1, b = render(out, os.path.join(tmp, "out"))
-    except (ValueError, subprocess.CalledProcessError):
+    except (ValueError, OSError, subprocess.CalledProcessError):
         return "unreadable", None, None
     if (w0, h0) != (w1, h1):
         return None, None, None
@@ -650,9 +652,10 @@ def run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args=()):
             problems.append(f"{len(inside)} character(s) still extracted inside the rect (MuPDF)")
     left_ink, changed_out, left_black = pixel_checks(pdf, out, rect, size, tmp)
     if left_ink == "unreadable":
-        res.update(outcome="incomplete", reason="measurement not established: render")
-        return res
-    if left_ink is None:
+        # Not measured; what the other checks found still stands.
+        incomplete.append("render")
+        left_ink = 0
+    elif left_ink is None:
         problems.append("render size changed")
     else:
         res["outside_pixels_changed"] = changed_out

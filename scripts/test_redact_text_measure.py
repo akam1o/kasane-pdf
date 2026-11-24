@@ -277,6 +277,18 @@ class RunOutcomes(unittest.TestCase):
         self.assertEqual(r["text_measures"], {k: "success" for k in ("poppler_in", "poppler_out", "mupdf_in", "mupdf_out")})
         self.assertEqual((r["outside_chars_mupdf"], r["outside_chars_mupdf_lost"]), (1, 0))
 
+    def test_an_unreadable_render_is_incomplete_and_keeps_other_findings(self):
+        unreadable = ("unreadable", None, None)
+        r = self.run_one(m_ok([WORD]), m_ok(chars=[CHAR]), m_ok([WORD]), m_ok(chars=[CHAR]), pixels=unreadable)
+        self.assertEqual(r["outcome"], "incomplete", r)
+        self.assertIn("render", r["reason"])
+        # A character still inside the rect: unexpected, whatever the render.
+        inside = ("S", 120.0, 120.0, 120.0, 118.0, 128.0, 130.0)
+        r = self.run_one(m_ok([WORD]), m_ok(chars=[CHAR, inside]), m_ok([WORD]), m_ok(chars=[CHAR, inside]),
+                         pixels=unreadable)
+        self.assertEqual(r["outcome"], "unexpected", r)
+        self.assertIn("inside the rect (MuPDF)", r["reason"])
+
     def test_a_page_without_text_is_ok(self):
         r = self.run_one(m_ok(), m_ok(chars=[]), m_ok(), m_ok(chars=[]))
         self.assertEqual(r["outcome"], "ok", r)
@@ -587,7 +599,8 @@ class Geometry(unittest.TestCase):
         self.assertEqual(ev.parse_pgm(b"P5\n3 2\n255\n" + raster), (3, 2, raster))
         self.assertEqual(ev.parse_pgm(b"P5 # c\n3\t2 255 " + raster), (3, 2, raster))
         for bad in (b"P5\n3 2\n255\n" + raster[:-1], b"P6\n3 2\n255\n" + raster,
-                    b"P5\n3 2\n65535\n" + raster, b"P5\n3"):
+                    b"P5\n3 2\n65535\n" + raster, b"P5\n3", b"P5\n0 0\n255\n",
+                    b"P5\n-1 -1\n255\n\x00"):
             with self.assertRaises(ValueError):
                 ev.parse_pgm(bad)
 
