@@ -678,6 +678,31 @@ class StrictPlatform(unittest.TestCase):
             self.assertEqual(e.exception.status, "failed", kw)
 
 
+class ReleaseCheckHistoryCoverage(unittest.TestCase):
+    """release-check.py: the tag's history.json covers every published
+    version but the release's own (a patch from an older tag)."""
+
+    rc = load("release_check", "scripts/release-check.py")
+
+    def test_coverage(self):
+        idx = [{"vers": v, "yanked": False} for v in ("0.12.0", "0.13.0", "0.13.1")]
+        idx.append({"vers": "0.11.9", "yanked": True})
+        f = self.rc.history_coverage_problems
+        # The v0.13.0 line's history, tagged as 0.13.1: 0.13.0 is missing.
+        p = f("0.13.1", idx, {"versions": ["0.12.0"], "excluded_versions": {}})
+        self.assertEqual(len(p), 1)
+        self.assertIn("0.13.0", p[0])
+        self.assertEqual(f("0.13.1", idx, {"versions": ["0.12.0", "0.13.0"]}), [])
+        # Excluded with a reason counts; without one it does not.
+        self.assertEqual(f("0.13.1", idx, {"versions": ["0.12.0"], "excluded_versions": {"0.13.0": "why"}}), [])
+        self.assertEqual(len(f("0.13.1", idx, {"versions": ["0.12.0"], "excluded_versions": {"0.13.0": " "}})), 1)
+        # The release itself (just published, or not yet) is not required;
+        # a yanked version is not published.
+        self.assertEqual(f("0.13.1", idx[:2], {"versions": ["0.12.0", "0.13.0"]}), [])
+        self.assertEqual(f("0.14.0", idx, {"versions": ["0.12.0", "0.13.0"]})[0].split()[4], "0.13.1,")
+        self.assertEqual(f("0.13.1", idx, None), ["history.json is unreadable"])
+
+
 class ReleaseCheckLocal(unittest.TestCase):
     """release-check.py's local part: R's and S's evidence, each its own."""
 

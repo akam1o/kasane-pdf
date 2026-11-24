@@ -50,8 +50,9 @@ request cannot weaken `gate` and report it green (docs/testing.md, *CI
 gates*). Force pushes and deletion are off. Administrators are not
 included (`enforce_admins` off): the maintainer can still push to
 `main` — used only to fast-forward it to a security release's commit
-whose full gate is green (B.3), and to land a change the guard refuses
-by design (a fork's change to the CI). Everything else, a normal
+whose full gate is green (B.3, until 0.13.0; from 0.13.1 R reaches
+`main` through the disclosure pull request instead), and to land a
+change the guard refuses by design (a fork's change to the CI). Everything else, a normal
 release's preparation included (A.2), is merged through the pull request
 (`gh pr merge <n> --merge`), never by a local merge pushed to `main`.
 
@@ -397,12 +398,17 @@ gh run watch <the pr.yml run of R>                  # ~6 minutes
 gh run watch <the codeql-release.yml run of R>      # ~5 minutes, in parallel
 scripts/release-check.py R --local-results <DIR of R> --disclosure S --disclosure-results <DIR of S> \
     --history-results <DIR of S's security-history run>
-                                                    # full gate and CodeQL green on R; R and S verified; main fast-forwards
-git push origin R:main
+                                                    # full gate and CodeQL green on R; R and S verified; main is an ancestor of R
 git tag -a v<version> -m "kasane-pdf <version>" R && git push origin v<version>
 git worktree add --detach /tmp/rel v<version>
 cd /tmp/rel && ./scripts/fetch-cjk-assets.sh --check && cargo publish
 ```
+
+The tag and the crate are R, the commit the gate verified. `main` is
+not pushed to: R reaches it with S, through the disclosure pull request
+(B.4, step 5), merged with `gh pr merge --merge` — its merge commit's
+tree is R's plus S's. A release cut from an older tag (0.13.1) reaches
+`main` the same way, its fix applied on top of `main`.
 
 ### B.4 Disclosure — once the crate can be downloaded
 
@@ -604,6 +610,15 @@ its own commit:
 - the nightly: `gh workflow run nightly.yml --ref release/v<version>`
   — it checks against the baselines committed on that branch (those of
   the version being patched), not `main`'s.
+
+Such a branch carries the older tag's `compat/advisories/history.json`,
+which does not list the versions published after that tag. Before the
+tag, bring every published version into it (its entry and its expected
+states, from a `main` history run): the nightly on the tag judges the
+tag's own history in `release-tag` mode and fails with
+`version_not_covered` otherwise. `release-check.py` checks it (0.13.1,
+cut from v0.13.0 before this check existed, lacks 0.13.0: its tag's
+nightly fails that job; its advisory history is judged on `main`).
 
 `main` is not moved to it: `scripts/release-check.py <sha>
 --require-nightly --no-main --local-results DIR` checks the gate without
