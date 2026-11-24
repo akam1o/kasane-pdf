@@ -2549,31 +2549,61 @@ pub(crate) fn regions_edit_session_with<'a>(
             let mut inherit_needs: BTreeMap<Vec<crate::redact_diag::FormFrame>, BTreeSet<Vec<u8>>> =
                 BTreeMap::new();
             order.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
+            // The text state each invocation inherits (for folding the
+            // positions of its removed text): each caller's stream read
+            // once, up to its last `Do` of a copied form, shallowest
+            // first, from the page's state.
+            let mut sites: BTreeMap<
+                Vec<crate::redact_diag::FormFrame>,
+                Vec<crate::redact_diag::FormFrame>,
+            > = BTreeMap::new();
+            for fp in &order {
+                let (frame, parent) = fp.split_last().expect("non-empty chain");
+                sites
+                    .entry(parent.to_vec())
+                    .or_default()
+                    .push(frame.clone());
+            }
+            let mut inherited_text: BTreeMap<
+                Vec<crate::redact_diag::FormFrame>,
+                crate::redact_textpos::TextStart,
+            > = BTreeMap::new();
+            let mut parents: Vec<_> = sites.keys().cloned().collect();
+            parents.sort_by_key(|p| p.len());
+            for parent in parents {
+                let start = if parent.is_empty() {
+                    crate::redact_textpos::TextStart::PAGE
+                } else {
+                    inherited_text[&parent]
+                };
+                if !parent.is_empty() && !form_streams.contains_key(&parent) {
+                    let f = load_form_node(doc, page, &parent, limits)?;
+                    form_streams.insert(parent.clone(), f);
+                }
+                let (parent_ops, parent_res) = if parent.is_empty() {
+                    (&ops[..], page.resources())
+                } else {
+                    let n = &form_streams[&parent];
+                    (&n.ops[..], n.res.as_ref())
+                };
+                let mut frames = sites.remove(&parent).unwrap_or_default();
+                frames.sort_by_key(|f| f.op_index);
+                let at: Vec<usize> = frames.iter().map(|f| f.op_index).collect();
+                let states = crate::redact_textpos::text_states_at(parent_ops, &at, start, &|n| {
+                    ext_gstate_keys(doc, parent_res, n)
+                });
+                for (frame, st) in frames.into_iter().zip(states) {
+                    let mut chain = parent.clone();
+                    chain.push(frame);
+                    inherited_text.insert(chain, st);
+                }
+            }
             for fp in order {
-                for k in 1..=fp.len() {
-                    if !form_streams.contains_key(&fp[..k]) {
-                        let f = load_form_node(doc, page, &fp[..k], limits)?;
-                        form_streams.insert(fp[..k].to_vec(), f);
-                    }
+                if !form_streams.contains_key(&fp) {
+                    let f = load_form_node(doc, page, &fp, limits)?;
+                    form_streams.insert(fp.clone(), f);
                 }
-                // The text state this invocation inherits: each stream of
-                // the chain up to its `Do`, from the page's.
-                let mut inherited = crate::redact_textpos::TextStart::PAGE;
-                for (k, frame) in fp.iter().enumerate() {
-                    let (parent_ops, parent_res) = match k {
-                        0 => (&ops[..], page.resources()),
-                        _ => {
-                            let n = &form_streams[&fp[..k]];
-                            (&n.ops[..], n.res.as_ref())
-                        }
-                    };
-                    inherited = crate::redact_textpos::text_state_at(
-                        parent_ops,
-                        frame.op_index,
-                        inherited,
-                        &|n| ext_gstate_keys(doc, parent_res, n),
-                    );
-                }
+                let inherited = inherited_text[&fp];
                 let node = &form_streams[&fp];
                 let mut new_form_ops: Vec<Operation> = Vec::with_capacity(node.ops.len());
                 let spans = if mode == SessionMode::Redact {

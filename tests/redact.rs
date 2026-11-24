@@ -1181,6 +1181,57 @@ fn a_form_folds_positions_with_the_text_state_it_inherits() {
         assert!((after[0].1 .0 - 53.0).abs() < 1e-6, "{page}: {after:?}");
         assert!(!contains(&r.output, b"SECRETTEXT"));
     }
+
+    // Nested, the page's state set across its split /Contents, the
+    // caller itself edited: the inner form's kept text lands where it was.
+    let nested = build_pdf(&{
+        let mut o = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents [4 0 R 5 0 R] \
+                  /Resources << /Font << /F1 20 0 R >> /XObject << /Fm 30 0 R >> >> >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", b"/F1 12 Tf")),
+            (5, stream_obj("", b"50 Tz /Fm Do")),
+            (
+                30,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+                     /Resources << /Font << /F1 20 0 R >> /XObject << /In 31 0 R >> >>",
+                    b"BT 60 95 Td (OUTERSECRET) Tj ET /In Do",
+                ),
+            ),
+            (
+                31,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 20 0 R >> >>",
+                    form.as_bytes(),
+                ),
+            ),
+        ];
+        o.extend(font_objs());
+        o
+    });
+    let r = run(&nested, vec![RECT]).unwrap();
+    assert_eq!((r.codes_removed, r.forms_edited), (21, 2));
+    let before = origins(&nested);
+    let after = origins(&r.output);
+    assert_eq!(after, before[21..]);
+    assert!((after[0].1 .0 - 53.0).abs() < 1e-6, "{after:?}");
+
+    // Two inputs that differ only in the removed text and the kerning
+    // after it, the kept word at the same place: the same output.
+    let same = |removed: &str, kern: i32| {
+        let form = format!("BT 50 100 Td ({removed}) Tj [{kern}] TJ (PUBLICWORD) Tj ET");
+        let pdf = form_page("/F1 12 Tf 50 Tz /Fm Do", "", &form, vec![]);
+        let r = run(&pdf, vec![RECT]).unwrap();
+        assert_eq!(r.codes_removed, removed.len() as u64);
+        r.output
+    };
+    assert!(same("SECRETTEXT", -15000) == same("SECRETTEXTXX", -13800));
 }
 
 /// An inline image refuses redaction on its page, away from the rects
