@@ -370,6 +370,10 @@ jobs:
         run: |
           pip3 install --quiet pypdf==6.21.4
           python3 scripts/usage-rights-audit.py --self-test
+      - name: zeroed-image check's own tests (qpdf, Poppler, MuPDF; synthetic cases, no corpus)
+        run: |
+          sudo apt-get install -y --no-install-recommends mupdf-tools
+          KASANE_REQUIRE_TOOLS=1 python3 scripts/test_check_zeroed_images.py
       - name: redaction checked by qpdf and pdftotext (synthetic cases, no corpus)
         run: |
           cargo build --release --bin kasane-pdf
