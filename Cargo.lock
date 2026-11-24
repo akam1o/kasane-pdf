@@ -189,12 +189,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2866f0d976e76497480b853d5e258dab6e4b89ecfe991124e08f15dfa8fd03ad"
 
 [[package]]
+name = "hayro-ccitt"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adbed896e99325bc312778bb9c9c289d795d51c12775c44dd5e4352f679c7e46"
+
+[[package]]
 name = "hayro-jbig2"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "000e025850f4592ddcaee85640db70704151f2bafd43b6f431aa5b6a2c6a35a9"
 dependencies = [
- "hayro-ccitt",
+ "hayro-ccitt 0.4.0",
 ]
 
 [[package]]
@@ -236,7 +242,7 @@ dependencies = [
  "brotli-decompressor",
  "cbc",
  "flate2",
- "hayro-ccitt",
+ "hayro-ccitt 0.5.0",
  "hayro-jbig2",
  "hayro-jpeg2000",
  "jpeg-decoder",
