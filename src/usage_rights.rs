@@ -1057,14 +1057,15 @@ pub(crate) fn check_redacted(
             {
                 return Err(residual("/Perms still has /UR, /UR3 or /DocMDP"));
             }
-            let same = left.len() == left_in.len()
-                && left_in
-                    .iter()
-                    .all(|(k, v)| match (v, left.get(k.as_slice())) {
-                        (Object::Ref(_), Some(Object::Ref(_))) => true,
-                        (Object::Ref(_), _) | (_, None) => false,
-                        (v, Some(w)) => v == w,
-                    });
+            let mut nodes = budget(limits);
+            let mut same = left.len() == left_in.len();
+            for (k, v) in &left_in {
+                same = same
+                    && match left.get(k.as_slice()) {
+                        Some(w) => same_value(input, v, out, w, 0, &mut nodes)?,
+                        None => false,
+                    };
+            }
             if !same {
                 return Err(residual("/Perms does not hold what was left in it"));
             }
@@ -1072,12 +1073,16 @@ pub(crate) fn check_redacted(
     }
     // /SigFlags: exactly as the removal set it on a form the output keeps
     // (a form the redaction removed has none).
-    if let Some(af) = out.catalog().get(b"AcroForm".as_slice()) {
-        let Object::Dict(af) =
-            deref_chain(out, af).map_err(|_| residual("/AcroForm cannot be read"))?
-        else {
-            return Err(residual("/AcroForm is not a dictionary"));
-        };
+    let form = match out.catalog().get(b"AcroForm".as_slice()) {
+        None => None,
+        // A null form is none (as the assessment reads it).
+        Some(af) => match deref_chain(out, af).map_err(|_| residual("/AcroForm cannot be read"))? {
+            Object::Null => None,
+            Object::Dict(af) => Some(af),
+            _ => return Err(residual("/AcroForm is not a dictionary")),
+        },
+    };
+    if let Some(af) = form {
         let got = match af.get(b"SigFlags".as_slice()) {
             None => None,
             Some(f) => {
@@ -1100,6 +1105,72 @@ pub(crate) fn check_redacted(
         return Err(residual("the page count differs from the input's"));
     }
     Ok(())
+}
+
+/// Whether the value `a` of `input` and `b` of `out` are the same data:
+/// equal direct values, dictionaries with the same keys and arrays of
+/// the same length holding the same values, streams with the same
+/// dictionary and bytes, a reference standing for the same value as the
+/// other side (followed to its end; reference numbers differ after a
+/// rewrite). Bounded: 16 levels deep and `nodes` values in all, beyond
+/// which the comparison fails with [`residual`]; an unreadable value is
+/// not the same.
+fn same_value(
+    input: &Document,
+    a: &Object,
+    out: &Document,
+    b: &Object,
+    depth: usize,
+    nodes: &mut usize,
+) -> Result<bool, Error> {
+    if depth > 16 || *nodes == 0 {
+        return Err(residual("/Perms could not be compared completely"));
+    }
+    *nodes -= 1;
+    let read = |d: &Document, o: &Object| match o {
+        Object::Ref(_) => deref_chain(d, o).ok(),
+        v => Some(v.clone()),
+    };
+    let (Some(a), Some(b)) = (read(input, a), read(out, b)) else {
+        return Ok(false);
+    };
+    Ok(match (&a, &b) {
+        (Object::Dict(x), Object::Dict(y)) => {
+            if x.len() != y.len() {
+                return Ok(false);
+            }
+            for (k, v) in x.iter() {
+                match y.get(k.as_slice()) {
+                    Some(w) if same_value(input, v, out, w, depth + 1, nodes)? => {}
+                    _ => return Ok(false),
+                }
+            }
+            true
+        }
+        (Object::Array(x), Object::Array(y)) => {
+            if x.len() != y.len() {
+                return Ok(false);
+            }
+            for (v, w) in x.iter().zip(y) {
+                if !same_value(input, v, out, w, depth + 1, nodes)? {
+                    return Ok(false);
+                }
+            }
+            true
+        }
+        (Object::Stream { dict: x, data: dx }, Object::Stream { dict: y, data: dy }) => {
+            dx == dy
+                && same_value(
+                    input,
+                    &Object::Dict(x.clone()),
+                    out,
+                    &Object::Dict(y.clone()),
+                    depth + 1,
+                    nodes,
+                )?
+        }
+        (x, y) => x == y,
+    })
 }
 
 /// The report of a removal carried out under `plan`. Content-free.
@@ -1284,23 +1355,39 @@ mod tests {
     #[test]
     fn check_redacted_compares_kept_perms_entries() {
         let input = doc(
-            "/Perms << /UR3 10 0 R /X 5 /Y 11 0 R >>",
+            "/Perms << /UR3 10 0 R /X 5 /Y 11 0 R /Z [11 0 R] >> /AcroForm null",
             "",
-            &[(10, UR3), (11, "<< >>")],
+            &[(10, UR3), (11, "<< /A 1 >>")],
         );
         let plan = assess(&input, &Limits::default()).unwrap().unwrap();
         let ok = |cat: &str, objs: &[(u32, &str)]| {
             check_redacted(&input, &doc(cat, "", objs), &plan, &Limits::default())
         };
-        assert!(ok("/Perms << /X 5 /Y 12 0 R >>", &[(12, "<< >>")]).is_ok());
+        // Renumbered, in a direct container too; inlined; a null form.
+        assert!(ok(
+            "/Perms << /X 5 /Y 12 0 R /Z [12 0 R] >>",
+            &[(12, "<< /A 1 >>")]
+        )
+        .is_ok());
+        assert!(ok(
+            "/Perms << /X 5 /Y << /A 1 >> /Z [12 0 R] >> /AcroForm null",
+            &[(12, "<< /A 1 >>")]
+        )
+        .is_ok());
         for cat in [
-            "/Perms << /X 6 /Y 12 0 R >>",
-            "/Perms << /X 5 /Z 12 0 R >>",
-            "/Perms << /X 5 /Y << >> >>",
-            "/Perms << /X 5 >>",
+            "/Perms << /X 6 /Y 12 0 R /Z [12 0 R] >>",
+            "/Perms << /X 5 /W 12 0 R /Z [12 0 R] >>",
+            "/Perms << /X 5 /Y 13 0 R /Z [12 0 R] >>",
+            "/Perms << /X 5 /Y 12 0 R /Z [13 0 R] >>",
+            "/Perms << /X 5 /Y 12 0 R /Z [12 0 R 12 0 R] >>",
+            "/Perms << /X 5 /Y 12 0 R >>",
+            "/Perms << /X 5 /Y 99 0 R /Z [12 0 R] >>",
             "",
         ] {
-            assert!(ok(cat, &[(12, "<< >>")]).is_err(), "{cat}");
+            assert!(
+                ok(cat, &[(12, "<< /A 1 >>"), (13, "<< /A 2 >>")]).is_err(),
+                "{cat}"
+            );
         }
     }
 

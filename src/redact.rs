@@ -424,13 +424,15 @@ fn raw_cr_refusal(doc: &Document) -> Result<(), Error> {
 /// the option, its refusals included). Unreadable: no (the redaction's
 /// own signature refusal reads it again).
 fn names_usage_rights(doc: &Document) -> bool {
-    // Read without leaving anything on the document (reference budget,
-    // object stream cache): without a usage-rights signature, the option
-    // changes nothing.
-    doc.without_side_effects(|| {
-        doc.catalog()
-            .get(b"Perms".as_slice())
-            .and_then(|p| crate::rewrite::deref_chain(doc, p).ok())
+    let Some(p) = doc.catalog().get(b"Perms".as_slice()) else {
+        return false;
+    };
+    // Read without leaving anything on the document (budgets, cache,
+    // counters): without a usage-rights signature, the option changes
+    // nothing.
+    doc.peek(|| {
+        crate::rewrite::deref_chain(doc, p)
+            .ok()
             .and_then(|p| p.as_dict().cloned())
             .is_some_and(|p| p.contains_key(b"UR".as_slice()) || p.contains_key(b"UR3".as_slice()))
     })
@@ -1421,6 +1423,34 @@ pub fn redaction_walk_findings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The usage-rights gate leaves no trace on a document without one:
+    /// as many reference resolutions left after it as on an identical
+    /// document it did not read, and the decoded budget, the cache, the
+    /// warnings and the unescaped-CR count as they were.
+    #[test]
+    fn the_usage_rights_gate_leaves_no_trace() {
+        let b = pdf(&[
+            b"<< /Type /Catalog /Pages 2 0 R /Perms 4 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>",
+            b"<< /X (a\rb) >>",
+        ]);
+        let left = |d: &Document| {
+            (0..)
+                .take_while(|_| d.resolve(IndirectRef::new(3, 0)).is_ok())
+                .count()
+        };
+        let lim = Limits::default().with_max_reference_depth(1000);
+        let (a, c) = (
+            Document::from_bytes_with_limits(&b, lim.clone()).unwrap(),
+            Document::from_bytes_with_limits(&b, lim).unwrap(),
+        );
+        assert!(!names_usage_rights(&a));
+        assert_eq!(a.raw_cr_object_strings(), c.raw_cr_object_strings());
+        assert_eq!(a.warnings().len(), c.warnings().len());
+        assert_eq!(left(&a), left(&c));
+    }
 
     fn pdf(objs: &[&[u8]]) -> Vec<u8> {
         let mut out = b"%PDF-1.7\n".to_vec();

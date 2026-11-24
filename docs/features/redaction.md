@@ -241,9 +241,10 @@ A document whose `/Perms` holds a usage-rights signature (`/UR`,
    only against the intermediate one: no signature-like dictionary,
    `/ByteRange` or field `/Lock` anywhere, `/Perms` gone when the
    removal emptied it, else holding exactly the entries it left (the
-   same keys, a direct value equal, a reference still a reference),
+   same keys and the same values, compared through references —
+   their numbers change — to 16 levels),
    `/SigFlags` exactly as the removal set it (bit 1 clear) on a form
-   the output keeps, the same page count; and the redaction's invariants that
+   the output keeps (a null `/AcroForm` is none), the same page count; and the redaction's invariants that
    compare an input with an output — use, non-interference, removed
    annotations, reachability — with the signed input as the input.
 
