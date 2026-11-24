@@ -169,9 +169,10 @@ On an edited page: annotations other than links meeting a rect,
 NoZoom or `/FixedPrint` annotations, NoRotate widgets and NoRotate
 annotations without a selected appearance stream, and Text annotations
 (whose icon behaves as NoZoom and NoRotate) not removed, forms nested more
-than 16 deep or cyclic, inline images (wherever they lie: in the page's
-content, the forms it draws, the appearances of its annotations, or a
-Type 3 glyph's procedure — readers do not all end their data alike),
+than 16 deep or cyclic, inline images (wherever they lie in the page's
+content, the forms it draws, the appearances of the annotations it
+keeps, or a Type 3 glyph's procedure — readers do not all end their data
+alike),
 `sh` crossing a rect, unbounded, in a
 form or reached from elsewhere, tiling patterns painting across a rect, in a form, under text
 meeting a rect or reached from elsewhere,
@@ -393,7 +394,7 @@ Each of these is refused with a typed error, not approximated:
   it next to a rect could keep data drawn inside the rect. Accepted
   for the Latin Standard 14 fonts after `embed_substitute_fonts` embeds
   their substitutes (a clip does not help: it hides ink, not the code).
-  Type 3 glyphs whose CharProcs draw more than paths and images, vertical fonts,
+  Type 3 glyphs whose CharProcs draw more than paths and image XObjects, vertical fonts,
   text in a clipping mode (`Tr` 4–7) and
   text under a text matrix stretching one axis over 16 times the other
   are refused too. Invisible text (`Tr 3`, OCR layers) is taken by a
@@ -408,9 +409,13 @@ Each of these is refused with a typed error, not approximated:
   the perpendicular cut (accepted, documented).
 - **Images**: masked (other than an 8-bit grey soft mask), four-component
   JPEGs, JBIG2 with `/JBIG2Globals` or a file header,
-  rotated or sheared, with `/Alternates` or OPI, and inline images
-  anywhere on an edited page or in a Type 3 glyph it shows (readers do
-  not all end their data alike). (`/Interpolate` and `/OC` on an image are accepted:
+  rotated or sheared, with `/Alternates` or OPI, and inline images in
+  the content an edited page draws (its content, its forms, the
+  appearances of the annotations it keeps, its soft-mask groups) or in
+  a Type 3 glyph it shows (readers do not all end their data alike). A
+  tiling pattern's cell is not walked: kept only clear of the rects or
+  as a rectangle's fill showing a whole period outside, what it draws
+  (an inline image included) is shown outside the rects only. (`/Interpolate` and `/OC` on an image are accepted:
   they do not change which samples are drawn where.)
 - **Paint**: shadings (`sh`) crossing a rect other than the axial
   ones the table describes, and tiling patterns crossing a rect other

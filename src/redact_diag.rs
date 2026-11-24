@@ -2701,6 +2701,11 @@ impl<'a> DiagWalker<'a> {
                                     (Some(n), Some(fb)) => self.tiling_period_shown(&n, &fb)?,
                                     _ => false,
                                 };
+                            // A kept cell is not walked: what it draws (an
+                            // inline image's data read another way by a
+                            // reader included) is clipped to its /BBox and
+                            // shown in every period, so a whole period
+                            // outside shows all of it there.
                             if periodic {
                                 if let Some(n) = &self.gs.tiling[0] {
                                     self.tiling_kept.insert(n.clone());
