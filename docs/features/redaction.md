@@ -233,14 +233,17 @@ A document whose `/Perms` holds a usage-rights signature (`/UR`,
    `rewrite_with` checks it — parsed again, nothing written but what a
    rewrite writes with those entries cut, no signature left — and
    parsed again. It is carried otherwise as it is, scripts included:
-   the redaction applies its own policy to them.
+   the redaction applies its own policy to them. A literal string with
+   an unescaped carriage return read by that rewrite refuses here, as
+   the redaction refuses it (parsed again, it would no longer be one).
 2. That document is redacted with the other options, as any document.
 3. The redacted output is checked against the **signed input**, not
    only against the intermediate one: no signature-like dictionary,
-   `/ByteRange` or field `/Lock` anywhere, `/Perms` without `/UR`,
-   `/UR3` or `/DocMDP` and holding only what the removal left,
-   `/SigFlags` as the removal set it (bit 1 clear) when the form is
-   kept, the same page count; and the redaction's invariants that
+   `/ByteRange` or field `/Lock` anywhere, `/Perms` gone when the
+   removal emptied it, else holding exactly the entries it left (the
+   same keys, a direct value equal, a reference still a reference),
+   `/SigFlags` exactly as the removal set it (bit 1 clear) on a form
+   the output keeps, the same page count; and the redaction's invariants that
    compare an input with an output — use, non-interference, removed
    annotations, reachability — with the signed input as the input.
 
