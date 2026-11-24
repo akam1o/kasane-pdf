@@ -302,7 +302,9 @@ struct OcDefault {
 }
 
 impl OcDefault {
-    fn of(doc: &Document) -> Result<OcDefault, Error> {
+    /// `registered`: read the groups a membership dictionary may count
+    /// as shown by (the lower bound's only).
+    fn of(doc: &Document, registered: bool) -> Result<OcDefault, Error> {
         let mut oc = OcDefault {
             base_on: true,
             view_intent: true,
@@ -314,17 +316,35 @@ impl OcDefault {
             return Ok(oc);
         };
         let p = doc.deref(p)?;
+        // Only a well-formed list: Poppler stops registering at the
+        // first entry that is not a group dictionary by reference.
+        let mut listed = HashSet::new();
+        let mut well_formed = registered;
         if let Some(p) = p
             .as_dict()
-            .filter(|p| p.get(b"Configs".as_slice()).is_none())
+            .filter(|p| well_formed && p.get(b"Configs".as_slice()).is_none())
         {
             if let Some(g) = p.get(b"OCGs".as_slice()) {
                 for x in doc.deref(g)?.as_array().unwrap_or(&[]) {
-                    if let Object::Ref(r) = x {
-                        oc.registered.insert(*r);
+                    let group = match x {
+                        // Unresolvable: not a group (and not an error here).
+                        Object::Ref(r) => doc.resolve(*r).ok().is_some_and(|o| {
+                            o.as_dict().is_some_and(|d| {
+                                d.get(b"Type".as_slice()).and_then(|t| t.as_name()) == Some(b"OCG")
+                            })
+                        }),
+                        _ => false,
+                    };
+                    match x {
+                        Object::Ref(r) if group => {
+                            listed.insert(*r);
+                        }
+                        _ => well_formed = false,
                     }
                 }
             }
+        } else {
+            well_formed = false;
         }
         let Some(d) = p.as_dict().and_then(|p| p.get(b"D".as_slice())) else {
             return Ok(oc);
@@ -344,11 +364,19 @@ impl OcDefault {
         for (k, set) in [(b"ON".as_slice(), &mut oc.on), (b"OFF", &mut oc.off)] {
             if let Some(a) = d.get(k) {
                 for x in doc.deref(a)?.as_array().unwrap_or(&[]) {
-                    if let Object::Ref(r) = x {
-                        set.insert(*r);
+                    match x {
+                        Object::Ref(r) => {
+                            // Poppler stops at an entry it did not register.
+                            well_formed &= listed.contains(r);
+                            set.insert(*r);
+                        }
+                        _ => well_formed = false,
                     }
                 }
             }
+        }
+        if well_formed {
+            oc.registered = listed;
         }
         // Groups an automatic state (`/AS`, §8.11.4.4) may switch by
         // their usage: readers differ (MuPDF applies it, Poppler does
@@ -757,7 +785,7 @@ pub(crate) fn usage_of(
         direct_fonts: HashMap::new(),
         interned: HashSet::new(),
         selected: HashMap::new(),
-        oc: OcDefault::of(doc)?,
+        oc: OcDefault::of(doc, bound == Bound::Under)?,
         seen_fonts: HashSet::new(),
         loaded: HashMap::new(),
         undecided_here: false,
@@ -2443,6 +2471,35 @@ mod tests {
         let doc = Document::from_bytes(&make("/OCGs 20 0 R", "/Configs [<< >>]")).unwrap();
         let u = usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();
         assert!(!u.used.contains_key(&IndirectRef::new(8, 0)));
+        // A catalog list Poppler stops reading early (an entry that is
+        // not a group by reference, the membership dictionary itself
+        // listed, an /ON entry it did not register): nothing is trusted.
+        // (The first, well formed, rewritten the same way: shown.)
+        for (ocgs, on, drawn) in [
+            ("[21 0 R 20 0 R 24 0 R]", "/ON [20 0 R]", true),
+            ("[21 0 R 9 0 R 20 0 R 24 0 R]", "", false),
+            ("[21 0 R (x) 20 0 R 24 0 R]", "", false),
+            ("[22 0 R 20 0 R 21 0 R 24 0 R]", "", false),
+            ("[20 0 R 21 0 R 24 0 R]", "/ON [23 0 R 20 0 R]", false),
+            ("[20 0 R 21 0 R 24 0 R]", "/ON [/x 20 0 R]", false),
+        ] {
+            let bytes = make("/OCGs 20 0 R", "").to_vec();
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let text = text
+                .replacen("/OCGs [20 0 R 21 0 R 24 0 R]", &format!("/OCGs {ocgs}"), 1)
+                .replacen(
+                    "/D << /OFF [21 0 R] >>",
+                    &format!("/D << /OFF [21 0 R] {on} >>"),
+                    1,
+                );
+            let doc = Document::from_bytes_recovering(text.as_bytes()).unwrap();
+            let u = usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();
+            assert_eq!(
+                u.used.contains_key(&IndirectRef::new(8, 0)),
+                drawn,
+                "{ocgs} {on}"
+            );
+        }
     }
 
     /// A button's read-only flag inherited from farther up than the
