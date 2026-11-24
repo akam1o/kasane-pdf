@@ -627,7 +627,7 @@ nightly fails that job; its advisory history is judged on `main`).
 
 `main` is not moved to it: `scripts/release-check.py <sha>
 --require-nightly --no-main --local-results DIR` checks the gate without
-the fast-forward condition. A tag older than `scripts/release-verify.py`
+the ancestor condition. A tag older than `scripts/release-verify.py`
 has no verifier of its own to run: its local gate is recorded by hand,
 and `--legacy-local` (instead of `--local-results`) says so. The tag goes on the release branch's verified commit; the
 branch's CHANGELOG section and release notes are then brought to `main`

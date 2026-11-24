@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Before main is moved to a release commit and the tag is created: has
+"""Before a release commit is tagged (and reaches main by a merge): has
 this exact commit passed the CI parts of the release gate?
 (docs/releasing.md, "The release gate")
 
@@ -109,7 +109,7 @@ def verdict(sha, runs, jobs, main_is_ancestor, require_nightly):
         if not any(corpus_ran(job(r, CORPUS_JOB)) for r in nightly):
             problems.append("no nightly.yml on this commit whose corpus job ran and succeeded")
     if not main_is_ancestor:
-        problems.append("origin/main is not an ancestor: main cannot be fast-forwarded to this commit")
+        problems.append("origin/main is not an ancestor: this commit cannot reach main without being rewritten")
     return problems
 
 

@@ -713,7 +713,7 @@ class ReleaseCheckHistoryCoverage(unittest.TestCase):
         import urllib.error
         import unittest.mock as um
         with um.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
-            with self.assertRaises(Exception):
+            with self.assertRaises(urllib.error.URLError):
                 self.rc.coverage_at("HEAD")
 
 
