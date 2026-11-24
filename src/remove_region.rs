@@ -2753,10 +2753,7 @@ pub(crate) fn regions_edit_session_with<'a>(
                     new_xobject_entries.push((new_name, clone_ref));
                     form_names.push(frame.name.clone());
                 } else {
-                    if !form_streams.contains_key(&parent) {
-                        let f = load_form_node(doc, page, &parent, limits)?;
-                        form_streams.insert(parent.clone(), f);
-                    }
+                    // Loaded by the text-state pass (every caller is).
                     let parent_res = form_streams[&parent].res.clone();
                     let entries = inner_entries.entry(parent.clone()).or_default();
                     let new_name = fresh_name_in(doc, parent_res.as_ref(), entries)?;
