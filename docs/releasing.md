@@ -406,9 +406,11 @@ cd /tmp/rel && ./scripts/fetch-cjk-assets.sh --check && cargo publish
 
 The tag and the crate are R, the commit the gate verified. `main` is
 not pushed to: R reaches it with S, through the disclosure pull request
-(B.4, step 5), merged with `gh pr merge --merge` — its merge commit's
-tree is R's plus S's. A release cut from an older tag (0.13.1) reaches
-`main` the same way, its fix applied on top of `main`.
+(B.4, step 5), merged with `gh pr merge --merge` — R stays an ancestor
+of `main`, never rewritten. A release cut from an older tag (0.13.1) is
+not an ancestor of `main`: its fix is applied on a branch from `main`
+with S's files (a new commit, not R), and that pull request is what
+reaches `main`.
 
 ### B.4 Disclosure — once the crate can be downloaded
 
@@ -434,9 +436,12 @@ tree is R's plus S's. A release cut from an older tag (0.13.1) reaches
    on crates.io from the tag's commit and S's history covers it, every
    input with its state. Without this, main's advisory history fails
    with `version_not_covered:<version>`.
-5. S: rebase it on `main` if needed (the diff stays tests/docs/
-   CHANGELOG/history/renderer baselines), open a pull request, merge it
-   when green. The tag stays on R.
+5. S: open a pull request from S to `main` and merge it with
+   `gh pr merge --merge` when green. Never rebase S: it descends from R,
+   and a rebase would rewrite R, the tagged and published commit. If
+   `main` moved, merge `main` into the branch (or let the pull request's
+   merge commit do it). The tag stays on R. (A release from an older
+   tag: see *Patch releases from a release branch*.)
 
 ### B.5 After publishing
 
@@ -636,7 +641,7 @@ undone, when users must be told, and when it needs a person.
 | case | go on? | retry | cannot be undone | tell users | by hand |
 | --- | --- | --- | --- | --- | --- |
 | **The full gate fails on R or M** (before the tag) | stop | an infrastructure failure (runner lost, download error): `gh run rerun <id> --failed`, then `release-check.py` again | in B, R's code is public — the advisories stay drafts | no (nothing released) | a real failure — in A: a fix by pull request, its merge the new M, the gate again (A.3); in B: fix, new R (and S), B.2 again, push the new R; keep the window short |
-| **CI fails on `main` after the push** (same SHA, gate was green on the branch) | the gate already passed on R: a flake is re-run; a real difference (a cache, a runner change) is investigated | `gh run rerun --failed` | `main` = R stays (no force push) | only if the version is published and the failure is real | seen before the tag: stop and fix as above; tagged but not published: the version is skipped if the source must change (the tag stays); published: fix forward in a patch release |
+| **CI fails on `main` after the merge** (the gate was green on R) | the gate already passed on R: a flake is re-run; a real difference (a cache, a runner change, the merge with `main`) is investigated | `gh run rerun --failed` | the merge stays (no force push) | only if the version is published and the failure is real | seen before the tag: stop and fix as above; tagged but not published: the version is skipped if the source must change (the tag stays); published: fix forward in a patch release |
 | **The tag push fails** | stop until it is pushed | the push (network, permission) — after an unclear failure, `git ls-remote origin refs/tags/v<version>` first | — | no | a tag pushed on the wrong commit is never moved or deleted: that version is skipped (not published), the next patch version is released, the CHANGELOG says the skipped one was never released |
 | **`cargo publish` fails** | stop the disclosure | before upload (a check, network, token): fix outside the source, publish again from the same tag | the tag (pushed), and the version if the upload went through | no | check `https://crates.io/api/v1/crates/kasane-pdf/<version>` before retrying (an upload may have succeeded and only the wait failed); a fix in the source means a new version (the tag stays, the version is skipped) |
 | **The crate cannot be downloaded** (index or CDN delay, crates.io incident) | wait; advisories stay drafts | `cargo info`, the sparse index (`https://index.crates.io/ka/sa/kasane-pdf`) and the `.crate` URL, every few minutes | the version is published | no, while the details are private | beyond an hour: status.crates.io, then the crates.io team |

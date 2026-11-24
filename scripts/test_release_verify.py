@@ -701,6 +701,20 @@ class ReleaseCheckHistoryCoverage(unittest.TestCase):
         self.assertEqual(f("0.13.1", idx[:2], {"versions": ["0.12.0", "0.13.0"]}), [])
         self.assertEqual(f("0.14.0", idx, {"versions": ["0.12.0", "0.13.0"]})[0].split()[4], "0.13.1,")
         self.assertEqual(f("0.13.1", idx, None), ["history.json is unreadable"])
+        # A patch of an older line after a newer minor: the newer one,
+        # published first, must be covered.
+        p = f("0.12.1", idx, {"versions": ["0.12.0"]})
+        self.assertEqual([x.split()[4] for x in p], ["0.13.0,", "0.13.1,"])
+        # The release listed in its own history; an empty index.
+        self.assertIn("the release itself", f("0.13.1", idx, {"versions": ["0.12.0", "0.13.0", "0.13.1"]})[0])
+        self.assertIn("could not be read", f("0.13.1", [], {"versions": ["0.12.0"]})[0])
+
+    def test_fetch_failure_fails(self):
+        import urllib.error
+        import unittest.mock as um
+        with um.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("down")):
+            with self.assertRaises(Exception):
+                self.rc.coverage_at("HEAD")
 
 
 class ReleaseCheckLocal(unittest.TestCase):

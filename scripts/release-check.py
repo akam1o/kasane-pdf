@@ -26,9 +26,8 @@ passes only when:
     that is not a reviewed alert. The default setup's analysis does not
     count: its success means the analysis ran, not that it found
     nothing new;
-  * origin/main is an ancestor of <sha> (main is fast-forwarded to it,
-    no new commit) — not with --no-main (a patch release from an older
-    tag, which main does not move to);
+  * origin/main is an ancestor of <sha> (it reaches main by a merge that
+    keeps it) — not with --no-main (a patch release from an older tag);
   * <sha>'s compat/advisories/history.json covers every version
     published on crates.io but <sha>'s own (the nightly on the tag
     judges the tag's history in `release-tag` mode);
@@ -242,12 +241,21 @@ def history_coverage_problems(version, index, history):
     """Before tagging `version`: the tag's own history.json must cover
     every version crates.io has published (listed, or excluded with a
     reason) — the nightly on the tag judges it in `release-tag` mode,
-    which fails with `version_not_covered` otherwise. A patch release cut
+    which fails with `version_not_covered` otherwise. Before publication
+    every indexed version but the release is published before it (the
+    nightly cuts by publication time, so a patch of an older line must
+    cover a newer version already out); the release itself must not be
+    listed. A patch release cut
     from an older tag carries that tag's history.json, which does not
     list the versions published after it (0.13.1 from v0.13.0: 0.13.0).
     `version` itself is the release, not a history entry."""
     if not isinstance(history, dict) or not isinstance(history.get("versions"), list):
         return ["history.json is unreadable"]
+    if not any(isinstance(e, dict) and e.get("vers") for e in index):
+        return ["the crates.io index could not be read (empty)"]
+    if version in history["versions"]:
+        return [f"history.json lists {version}, the release itself (the nightly on the tag refuses "
+                f"it: history_version_not_before_tag)"]
     excluded = history.get("excluded_versions") or {}
     listed = set(history["versions"]) | {v for v, why in excluded.items() if isinstance(why, str) and why.strip()}
     published = {e.get("vers") for e in index if not e.get("yanked")} - {version}
@@ -358,7 +366,7 @@ def main():
     if problems:
         sys.exit(1)
     print(f"{sha}: full gate and CodeQL green{', nightly corpus green' if require_nightly else ''}"
-          f"{'' if no_main else '; main fast-forwards to it'}"
+          f"{'' if no_main else '; main is an ancestor of it'}"
           f"{'' if legacy else '; local release verification proves it'}"
           f"{'; the disclosure commit is verified' if '--disclosure' in opts else ''}")
 
