@@ -295,20 +295,57 @@ struct OcDefault {
     view_intent: bool,
     on: HashSet<IndirectRef>,
     off: HashSet<IndirectRef>,
+    /// The groups `/OCProperties /OCGs` lists, when it has no
+    /// `/Configs` (a reader may pick another configuration from them):
+    /// the only groups a membership dictionary may count as shown by.
+    registered: HashSet<IndirectRef>,
 }
 
 impl OcDefault {
-    fn of(doc: &Document) -> Result<OcDefault, Error> {
+    /// `registered`: read the groups a membership dictionary may count
+    /// as shown by (the lower bound's only).
+    fn of(doc: &Document, registered: bool) -> Result<OcDefault, Error> {
         let mut oc = OcDefault {
             base_on: true,
             view_intent: true,
             on: HashSet::new(),
             off: HashSet::new(),
+            registered: HashSet::new(),
         };
         let Some(p) = doc.catalog().get(b"OCProperties".as_slice()) else {
             return Ok(oc);
         };
         let p = doc.deref(p)?;
+        // Only a well-formed list: Poppler stops registering at the
+        // first entry that is not a group dictionary by reference.
+        let mut listed = HashSet::new();
+        let mut well_formed = registered;
+        if let Some(p) = p
+            .as_dict()
+            .filter(|p| well_formed && p.get(b"Configs".as_slice()).is_none())
+        {
+            if let Some(g) = p.get(b"OCGs".as_slice()) {
+                for x in doc.deref(g)?.as_array().unwrap_or(&[]) {
+                    let group = match x {
+                        // Unresolvable: not a group (and not an error here).
+                        Object::Ref(r) => doc.resolve(*r).ok().is_some_and(|o| {
+                            o.as_dict().is_some_and(|d| {
+                                d.get(b"Type".as_slice()).and_then(|t| t.as_name()) == Some(b"OCG")
+                            })
+                        }),
+                        _ => false,
+                    };
+                    match x {
+                        Object::Ref(r) if group => {
+                            listed.insert(*r);
+                        }
+                        _ => well_formed = false,
+                    }
+                }
+            }
+        } else {
+            well_formed = false;
+        }
         let Some(d) = p.as_dict().and_then(|p| p.get(b"D".as_slice())) else {
             return Ok(oc);
         };
@@ -327,11 +364,19 @@ impl OcDefault {
         for (k, set) in [(b"ON".as_slice(), &mut oc.on), (b"OFF", &mut oc.off)] {
             if let Some(a) = d.get(k) {
                 for x in doc.deref(a)?.as_array().unwrap_or(&[]) {
-                    if let Object::Ref(r) = x {
-                        set.insert(*r);
+                    match x {
+                        Object::Ref(r) => {
+                            // Poppler stops at an entry it did not register.
+                            well_formed &= listed.contains(r);
+                            set.insert(*r);
+                        }
+                        _ => well_formed = false,
                     }
                 }
             }
+        }
+        if well_formed {
+            oc.registered = listed;
         }
         // Groups an automatic state (`/AS`, §8.11.4.4) may switch by
         // their usage: readers differ (MuPDF applies it, Poppler does
@@ -354,11 +399,69 @@ impl OcDefault {
     }
 
     /// Whether content under `oc` (an `/OC` value, a `BDC /OC`
-    /// properties entry) is shown by default: only a group, by
-    /// reference, that the default configuration turns on and no
-    /// automatic state names. A membership dictionary or
-    /// anything else counts as hidden.
+    /// properties entry) is shown by default: a group, by reference,
+    /// that the default configuration turns on and no automatic state
+    /// names; or a membership dictionary (§8.11.2.2) without `/VE`
+    /// whose `/P` is `/AnyOn` (the default) — or `/AllOn` with an array
+    /// of groups (MuPDF hides `/AllOn` over a single reference) — and
+    /// whose groups, one or more, are each shown so, listed in
+    /// `/OCProperties /OCGs` (Poppler hides a group it does not list),
+    /// with no `/Configs` to choose from and no group `/Intent` other
+    /// than `/View` (MuPDF hides a design group): every reader shows it,
+    /// whichever of its groups it reads. Anything else counts as hidden
+    /// (readers do not agree on `/AnyOff`, `/AllOff` or `/VE`).
     fn shows(&self, doc: &Document, oc: &Object) -> Result<bool, Error> {
+        let Object::Ref(r) = oc else { return Ok(false) };
+        let g = doc.resolve(*r)?;
+        let ty = g
+            .as_dict()
+            .and_then(|d| d.get(b"Type".as_slice()))
+            .and_then(|t| t.as_name());
+        if ty == Some(b"OCMD".as_slice()) {
+            let d = g.as_dict().expect("typed above");
+            if d.get(b"VE".as_slice()).is_some() {
+                return Ok(false);
+            }
+            let p = match d.get(b"P".as_slice()) {
+                Some(p) => doc.deref(p)?.as_name().map(|n| n.to_vec()),
+                None => Some(b"AnyOn".to_vec()),
+            };
+            let groups = match (p.as_deref(), d.get(b"OCGs".as_slice())) {
+                (Some(b"AnyOn"), Some(Object::Ref(g))) => vec![Object::Ref(*g)],
+                (Some(b"AnyOn" | b"AllOn"), Some(Object::Array(a))) => a.clone(),
+                _ => return Ok(false),
+            };
+            if groups.is_empty() {
+                return Ok(false);
+            }
+            for g in &groups {
+                let Object::Ref(r) = g else { return Ok(false) };
+                if !self.registered.contains(r) || !self.shows_group(doc, g)? {
+                    return Ok(false);
+                }
+                // A group for an intent other than viewing.
+                let intent = doc
+                    .resolve(*r)?
+                    .as_dict()
+                    .and_then(|d| d.get(b"Intent".as_slice()))
+                    .cloned();
+                let view = match intent.map(|i| doc.deref(&i)).transpose()? {
+                    None => true,
+                    Some(Object::Name(n)) => n.as_slice() == b"View",
+                    Some(Object::Array(a)) => a.len() == 1 && a[0].as_name() == Some(b"View"),
+                    Some(_) => false,
+                };
+                if !view {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+        self.shows_group(doc, oc)
+    }
+
+    /// [`Self::shows`] for a group: `oc` a reference to an `/OCG`.
+    fn shows_group(&self, doc: &Document, oc: &Object) -> Result<bool, Error> {
         let Object::Ref(r) = oc else { return Ok(false) };
         let g = doc.resolve(*r)?;
         let is_group = g
@@ -682,7 +785,7 @@ pub(crate) fn usage_of(
         direct_fonts: HashMap::new(),
         interned: HashSet::new(),
         selected: HashMap::new(),
-        oc: OcDefault::of(doc)?,
+        oc: OcDefault::of(doc, bound == Bound::Under)?,
         seen_fonts: HashSet::new(),
         loaded: HashMap::new(),
         undecided_here: false,
@@ -2307,6 +2410,95 @@ mod tests {
                 let u = usage(&doc, &|_| true, b, &Limits::default()).unwrap();
                 assert!(u.used.contains_key(&IndirectRef::new(8, 0)), "{d} {b:?}");
             }
+        }
+    }
+
+    /// A membership dictionary is drawn over the output only where
+    /// Poppler, MuPDF and pdf.js all show it: `/AnyOn` (the default) or
+    /// `/AllOn` with every group on. They disagree on `/AllOn` with a
+    /// group off, `/AnyOff` and `/VE`; `/AllOff` and an empty `/OCGs`
+    /// are not counted either. (Group 20 is on, 21 off.)
+    #[test]
+    fn optional_content_membership() {
+        let make = |m: &str, configs: &str| {
+            pdf(&[
+                (1, format!("<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [20 0 R 21 0 R 24 0 R] {configs} /D << /OFF [21 0 R] >> >> >>").into_bytes()),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+                (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /Resources << /Properties << /L 22 0 R >> /XObject << /Im 9 0 R >> >> >>".to_vec()),
+                (4, stream("", b"/OC /L BDC q 20 0 0 20 10 10 cm /Im Do Q EMC")),
+                (8, stream("", b"\x01\x02\x03\xf1\xf2\xf3")),
+                (9, stream("/Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace [/Indexed /DeviceRGB 1 8 0 R]", b"\x00")),
+                (20, b"<< /Type /OCG /Name (on) >>".to_vec()),
+                (21, b"<< /Type /OCG /Name (off) >>".to_vec()),
+                (22, format!("<< /Type /OCMD {m} >>").into_bytes()),
+                (23, b"<< /Type /OCG /Name (unlisted) >>".to_vec()),
+                (24, b"<< /Type /OCG /Name (design) /Intent /Design >>".to_vec()),
+                (25, b"[20 0 R]".to_vec()),
+            ])
+        };
+        for (m, drawn) in [
+            ("/OCGs 20 0 R", true),
+            ("/OCGs [20 0 R]", true),
+            ("/OCGs [20 0 R] /P /AllOn", true),
+            ("/OCGs [20 0 R 20 0 R] /P /AnyOn", true),
+            ("/OCGs 21 0 R", false),
+            ("/OCGs [20 0 R 21 0 R] /P /AllOn", false),
+            ("/OCGs [20 0 R 21 0 R] /P /AnyOn", false),
+            ("/OCGs [20 0 R 21 0 R] /P /AnyOff", false),
+            ("/OCGs [21 0 R] /P /AllOff", false),
+            ("/OCGs [20 0 R] /VE [/Not 21 0 R]", false),
+            ("/OCGs []", false),
+            ("/P /AnyOn", false),
+            ("/OCGs [20 0 R] /P /Other", false),
+            // MuPDF hides /AllOn over a single reference; Poppler a group
+            // /OCProperties does not list; MuPDF a design group.
+            ("/OCGs 20 0 R /P /AllOn", false),
+            ("/OCGs [23 0 R]", false),
+            ("/OCGs 23 0 R", false),
+            ("/OCGs [24 0 R]", false),
+            // An array by reference is not read as one.
+            ("/OCGs 25 0 R", false),
+        ] {
+            let doc = Document::from_bytes(&make(m, "")).unwrap();
+            let u = usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();
+            assert_eq!(u.used.contains_key(&IndirectRef::new(8, 0)), drawn, "{m}");
+            for b in [Bound::Over, Bound::Complete] {
+                let u = usage(&doc, &|_| true, b, &Limits::default()).unwrap();
+                assert!(u.used.contains_key(&IndirectRef::new(8, 0)), "{m} {b:?}");
+            }
+        }
+        // With configurations to choose from, a reader may not use /D.
+        let doc = Document::from_bytes(&make("/OCGs 20 0 R", "/Configs [<< >>]")).unwrap();
+        let u = usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();
+        assert!(!u.used.contains_key(&IndirectRef::new(8, 0)));
+        // A catalog list Poppler stops reading early (an entry that is
+        // not a group by reference, the membership dictionary itself
+        // listed, an /ON entry it did not register): nothing is trusted.
+        // (The first, well formed, rewritten the same way: shown.)
+        for (ocgs, on, drawn) in [
+            ("[21 0 R 20 0 R 24 0 R]", "/ON [20 0 R]", true),
+            ("[21 0 R 9 0 R 20 0 R 24 0 R]", "", false),
+            ("[21 0 R (x) 20 0 R 24 0 R]", "", false),
+            ("[22 0 R 20 0 R 21 0 R 24 0 R]", "", false),
+            ("[20 0 R 21 0 R 24 0 R]", "/ON [23 0 R 20 0 R]", false),
+            ("[20 0 R 21 0 R 24 0 R]", "/ON [/x 20 0 R]", false),
+        ] {
+            let bytes = make("/OCGs 20 0 R", "").to_vec();
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let text = text
+                .replacen("/OCGs [20 0 R 21 0 R 24 0 R]", &format!("/OCGs {ocgs}"), 1)
+                .replacen(
+                    "/D << /OFF [21 0 R] >>",
+                    &format!("/D << /OFF [21 0 R] {on} >>"),
+                    1,
+                );
+            let doc = Document::from_bytes_recovering(text.as_bytes()).unwrap();
+            let u = usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();
+            assert_eq!(
+                u.used.contains_key(&IndirectRef::new(8, 0)),
+                drawn,
+                "{ocgs} {on}"
+            );
         }
     }
 
