@@ -50,13 +50,64 @@ impl TextStart {
         leading: Some(0.0),
         render_mode: Some(0),
     };
-    /// A form's: everything inherited.
+    /// A form's, its caller's state unknown: everything inherited.
+    #[cfg(test)]
     pub(crate) const FORM: TextStart = TextStart {
         font_size: None,
         h_scale: None,
         leading: None,
         render_mode: None,
     };
+}
+
+/// The text states forms drawn by `ops[at]` (`Do`s; `at` ascending)
+/// inherit (§8.10.1: a form runs in the graphics state at its `Do`),
+/// from the stream's own `start`, in one pass: `Tf`, `Tz`, `TL`, `TD`
+/// and `Tr` through `q`/`Q`. What is not known stays `None`: an
+/// ExtGState that may set the font (`gs_keys` gives `/Font`, or its
+/// keys are not known) and a `Q` without its `q`.
+pub(crate) fn text_states_at(
+    ops: &[Operation],
+    at: &[usize],
+    start: TextStart,
+    gs_keys: GsKeys,
+) -> Vec<TextStart> {
+    use Operation as O;
+    let unknown = TextStart {
+        font_size: None,
+        h_scale: None,
+        leading: None,
+        render_mode: None,
+    };
+    let mut out = Vec::with_capacity(at.len());
+    let mut next = at.iter().peekable();
+    let mut s = start;
+    let mut saved = Vec::new();
+    for (i, op) in ops.iter().enumerate() {
+        while next.next_if(|&&a| a <= i).is_some() {
+            out.push(s);
+        }
+        if next.peek().is_none() {
+            break;
+        }
+        match op {
+            O::SaveState => saved.push(s),
+            O::RestoreState => s = saved.pop().unwrap_or(unknown),
+            O::SetTextFont { size, .. } => s.font_size = Some(*size),
+            O::SetHorizontalScaling(h) => s.h_scale = Some(*h / 100.0),
+            O::SetTextLeading(l) => s.leading = Some(*l),
+            O::MoveTextPositionAndSetLeading(_, y) => s.leading = Some(-*y),
+            O::SetTextRenderingMode(m) => s.render_mode = Some(*m),
+            O::SetExtGState(name)
+                if gs_keys(name).is_none_or(|k| k.iter().any(|k| k == b"Font")) =>
+            {
+                s.font_size = None;
+            }
+            _ => {}
+        }
+    }
+    out.extend(next.map(|_| s));
+    out
 }
 
 fn unsupported(detail: &str) -> Error {
@@ -920,6 +971,73 @@ mod tests {
             ),
             // (the Tc after is read by nothing: dropped)
             "BT /F1 9 Tf (A) Tj ET"
+        );
+    }
+
+    fn parse(src: &str) -> Vec<Operation> {
+        let mut w = Vec::new();
+        crate::content::parse_content_stream(
+            &[src.as_bytes().to_vec()],
+            &crate::limits::Limits::default(),
+            false,
+            &mut w,
+        )
+        .unwrap()
+    }
+
+    fn state_at(src: &str, at: usize, start: TextStart, gs: GsKeys) -> TextStart {
+        text_states_at(&parse(src), &[at], start, gs)[0]
+    }
+
+    #[test]
+    fn inherited_text_state() {
+        let t = |s: TextStart| (s.font_size, s.h_scale, s.leading, s.render_mode);
+        // Set before the Do, inside and outside BT/ET alike.
+        let src = "BT /F1 9 Tf 50 Tz ET 3 Tr 0 -11 TD /Fm0 Do";
+        assert_eq!(
+            t(state_at(src, 6, TextStart::PAGE, &|_| None)),
+            (Some(9.0), Some(0.5), Some(11.0), Some(3))
+        );
+        // Not what comes after it.
+        assert_eq!(
+            t(state_at(src, 2, TextStart::PAGE, &|_| None)),
+            (Some(9.0), Some(1.0), Some(0.0), Some(0))
+        );
+        // Q restores.
+        let src = "/F1 9 Tf q /F1 20 Tf 80 Tz Q /Fm0 Do";
+        assert_eq!(
+            t(state_at(src, 5, TextStart::PAGE, &|_| None)),
+            (Some(9.0), Some(1.0), Some(0.0), Some(0))
+        );
+        // An ExtGState that may set the font (or is not known) unsets it.
+        let src = "/F1 9 Tf /GS0 gs /Fm0 Do";
+        assert_eq!(state_at(src, 2, TextStart::PAGE, &|_| None).font_size, None);
+        let font = |_: &[u8]| Some(vec![b"Font".to_vec()]);
+        assert_eq!(state_at(src, 2, TextStart::PAGE, &font).font_size, None);
+        let ca = |_: &[u8]| Some(vec![b"ca".to_vec()]);
+        assert_eq!(state_at(src, 2, TextStart::PAGE, &ca).font_size, Some(9.0));
+        // A form's own start carries through to a form it draws.
+        let outer = state_at("50 Tz /Fm1 Do", 1, TextStart::FORM, &|_| None);
+        assert_eq!(t(outer), (None, Some(0.5), None, None));
+        // Several Dos read in one pass, in order (and one past the end).
+        let src = "/F1 9 Tf /Fm0 Do 50 Tz /Fm1 Do q /F1 7 Tf Q /Fm2 Do";
+        let all = text_states_at(&parse(src), &[1, 3, 7, 99], TextStart::PAGE, &|_| None);
+        assert_eq!(
+            all.into_iter()
+                .map(|s| (s.font_size, s.h_scale))
+                .collect::<Vec<_>>(),
+            [
+                (Some(9.0), Some(1.0)),
+                (Some(9.0), Some(0.5)),
+                (Some(9.0), Some(0.5)),
+                (Some(9.0), Some(0.5))
+            ]
+        );
+        // With the inherited Tf and Tz known, a form's removed kerns fold.
+        let start = state_at("/F1 10 Tf 50 Tz /Fm0 Do", 2, TextStart::PAGE, &|_| None);
+        assert_eq!(
+            fold("BT 0 0 Td (A) Tj 7 0 Td [-500] TJ (B) Tj ET", start),
+            "BT 0 0 Td (A) Tj 9.5 0 Td (B) Tj ET"
         );
     }
 

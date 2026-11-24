@@ -1156,6 +1156,84 @@ fn nested_forms_and_form_images_are_redacted() {
     );
 }
 
+/// A form's text uses the font size and horizontal scaling it inherits
+/// from its `Do`: the removed text's positions fold with them, and what
+/// follows lands where it did.
+#[test]
+fn a_form_folds_positions_with_the_text_state_it_inherits() {
+    let origins = |pdf: &[u8]| -> Vec<(String, (f64, f64))> {
+        let doc = Document::from_bytes(pdf).unwrap();
+        extract_text(&doc, &doc.pages()[0], &TextOptions::default())
+            .unwrap()
+            .chars
+            .iter()
+            .filter_map(|c| Some((c.unicode.clone()?, c.origin)))
+            .collect()
+    };
+    let form = "BT 50 100 Td (SECRETTEXT) Tj 0 -40 Td [-500] TJ (PUBLICWORD) Tj ET";
+    for page in ["/F1 12 Tf 50 Tz /Fm Do", "q /F1 12 Tf 50 Tz q /Fm Do Q Q"] {
+        let pdf = form_page(page, "", form, vec![]);
+        let r = run(&pdf, vec![RECT]).unwrap();
+        assert_eq!((r.codes_removed, r.forms_edited), (10, 1), "{page}");
+        let before = origins(&pdf);
+        let after = origins(&r.output);
+        assert_eq!(after, before[10..], "{page}");
+        assert!((after[0].1 .0 - 53.0).abs() < 1e-6, "{page}: {after:?}");
+        assert!(!contains(&r.output, b"SECRETTEXT"));
+    }
+
+    // Nested, the page's state set across its split /Contents, the
+    // caller itself edited: the inner form's kept text lands where it was.
+    let nested = build_pdf(&{
+        let mut o = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents [4 0 R 5 0 R] \
+                  /Resources << /Font << /F1 20 0 R >> /XObject << /Fm 30 0 R >> >> >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", b"/F1 12 Tf")),
+            (5, stream_obj("", b"50 Tz /Fm Do")),
+            (
+                30,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+                     /Resources << /Font << /F1 20 0 R >> /XObject << /In 31 0 R >> >>",
+                    b"BT 60 95 Td (OUTERSECRET) Tj ET /In Do",
+                ),
+            ),
+            (
+                31,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 20 0 R >> >>",
+                    form.as_bytes(),
+                ),
+            ),
+        ];
+        o.extend(font_objs());
+        o
+    });
+    let r = run(&nested, vec![RECT]).unwrap();
+    assert_eq!((r.codes_removed, r.forms_edited), (21, 2));
+    let before = origins(&nested);
+    let after = origins(&r.output);
+    assert_eq!(after, before[21..]);
+    assert!((after[0].1 .0 - 53.0).abs() < 1e-6, "{after:?}");
+
+    // Two inputs that differ only in the removed text and the kerning
+    // after it, the kept word at the same place: the same output.
+    let same = |removed: &str, kern: i32| {
+        let form = format!("BT 50 100 Td ({removed}) Tj [{kern}] TJ (PUBLICWORD) Tj ET");
+        let pdf = form_page("/F1 12 Tf 50 Tz /Fm Do", "", &form, vec![]);
+        let r = run(&pdf, vec![RECT]).unwrap();
+        assert_eq!(r.codes_removed, removed.len() as u64);
+        r.output
+    };
+    assert!(same("SECRETTEXT", -15000) == same("SECRETTEXTXX", -13800));
+}
+
 /// An inline image refuses redaction on its page, away from the rects
 /// or meeting one: readers do not all end its data alike.
 #[test]

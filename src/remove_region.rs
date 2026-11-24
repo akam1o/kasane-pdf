@@ -2549,11 +2549,61 @@ pub(crate) fn regions_edit_session_with<'a>(
             let mut inherit_needs: BTreeMap<Vec<crate::redact_diag::FormFrame>, BTreeSet<Vec<u8>>> =
                 BTreeMap::new();
             order.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
+            // The text state each invocation inherits (for folding the
+            // positions of its removed text): each caller's stream read
+            // once, up to its last `Do` of a copied form, shallowest
+            // first, from the page's state.
+            let mut sites: BTreeMap<
+                Vec<crate::redact_diag::FormFrame>,
+                Vec<crate::redact_diag::FormFrame>,
+            > = BTreeMap::new();
+            for fp in &order {
+                let (frame, parent) = fp.split_last().expect("non-empty chain");
+                sites
+                    .entry(parent.to_vec())
+                    .or_default()
+                    .push(frame.clone());
+            }
+            let mut inherited_text: BTreeMap<
+                Vec<crate::redact_diag::FormFrame>,
+                crate::redact_textpos::TextStart,
+            > = BTreeMap::new();
+            let mut parents: Vec<_> = sites.keys().cloned().collect();
+            parents.sort_by_key(|p| p.len());
+            for parent in parents {
+                let start = if parent.is_empty() {
+                    crate::redact_textpos::TextStart::PAGE
+                } else {
+                    inherited_text[&parent]
+                };
+                if !parent.is_empty() && !form_streams.contains_key(&parent) {
+                    let f = load_form_node(doc, page, &parent, limits)?;
+                    form_streams.insert(parent.clone(), f);
+                }
+                let (parent_ops, parent_res) = if parent.is_empty() {
+                    (&ops[..], page.resources())
+                } else {
+                    let n = &form_streams[&parent];
+                    (&n.ops[..], n.res.as_ref())
+                };
+                let mut frames = sites.remove(&parent).unwrap_or_default();
+                frames.sort_by_key(|f| f.op_index);
+                let at: Vec<usize> = frames.iter().map(|f| f.op_index).collect();
+                let states = crate::redact_textpos::text_states_at(parent_ops, &at, start, &|n| {
+                    ext_gstate_keys(doc, parent_res, n)
+                });
+                for (frame, st) in frames.into_iter().zip(states) {
+                    let mut chain = parent.clone();
+                    chain.push(frame);
+                    inherited_text.insert(chain, st);
+                }
+            }
             for fp in order {
                 if !form_streams.contains_key(&fp) {
                     let f = load_form_node(doc, page, &fp, limits)?;
                     form_streams.insert(fp.clone(), f);
                 }
+                let inherited = inherited_text[&fp];
                 let node = &form_streams[&fp];
                 let mut new_form_ops: Vec<Operation> = Vec::with_capacity(node.ops.len());
                 let spans = if mode == SessionMode::Redact {
@@ -2615,7 +2665,7 @@ pub(crate) fn regions_edit_session_with<'a>(
                     let res = node.res.clone().or_else(|| page.resources().cloned());
                     new_form_ops = crate::redact_textpos::fold_removed_positions(
                         &new_form_ops,
-                        crate::redact_textpos::TextStart::FORM,
+                        inherited,
                         &|n| ext_gstate_keys(doc, res.as_ref(), n),
                     )?;
                 }
@@ -2703,10 +2753,7 @@ pub(crate) fn regions_edit_session_with<'a>(
                     new_xobject_entries.push((new_name, clone_ref));
                     form_names.push(frame.name.clone());
                 } else {
-                    if !form_streams.contains_key(&parent) {
-                        let f = load_form_node(doc, page, &parent, limits)?;
-                        form_streams.insert(parent.clone(), f);
-                    }
+                    // Loaded by the text-state pass (every caller is).
                     let parent_res = form_streams[&parent].res.clone();
                     let entries = inner_entries.entry(parent.clone()).or_default();
                     let new_name = fresh_name_in(doc, parent_res.as_ref(), entries)?;
