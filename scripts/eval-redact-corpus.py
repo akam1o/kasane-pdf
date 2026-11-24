@@ -426,10 +426,11 @@ def run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args=()):
         incomplete = []
         if n_in != n_out:
             problems.append("the page count changed")
-            if PAGE > n_out:
-                # The page evaluated is gone: nothing more can be measured.
-                res.update(outcome="unexpected", reason="; ".join(problems))
-                return res
+    if n_out is not None and PAGE > n_out:
+        # The page evaluated is gone: nothing more can be measured.
+        problems.append(f"page {PAGE} is not in the output")
+        res.update(outcome="unexpected", reason="; ".join(problems))
+        return res
     # Each measurement on its own: one engine's success never stands in
     # for the other's failure.
     out_pop = poppler_words(out, size[1])
@@ -654,7 +655,10 @@ def main():
     for i, why in skipped:
         print(f"skipped {i}: {why}")
     if out_json:
-        json.dump({"results": results, "skipped": skipped}, open(out_json, "w"), indent=1)
+        doc = {"results": results, "skipped": skipped}
+        if pages_mode != "first":
+            doc["pages"] = pages_mode
+        json.dump(doc, open(out_json, "w"), indent=1)
     sys.exit(1 if counts.get("unexpected") or counts.get("incomplete") else 0)
 
 

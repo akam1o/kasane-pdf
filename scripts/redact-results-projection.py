@@ -125,7 +125,7 @@ def main():
     if "results" in d:
         # The committed projections are page 1's, keyed by (id, kind): a
         # report of other pages (`--pages spread`) is not one of them.
-        if any("page" in r for r in d["results"]):
+        if "pages" in d or any("page" in r for r in d["results"]):
             sys.exit("redact-results-projection: a --pages spread report (runs keyed by page) is not projected")
         out = {"results": [eval_run(r) for r in d["results"]],
                "skipped": [str(s[0]) for s in d.get("skipped", [])]}
