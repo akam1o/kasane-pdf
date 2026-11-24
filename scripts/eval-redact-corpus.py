@@ -426,6 +426,10 @@ def run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args=()):
         incomplete = []
         if n_in != n_out:
             problems.append("the page count changed")
+            if PAGE > n_out:
+                # The page evaluated is gone: nothing more can be measured.
+                res.update(outcome="unexpected", reason="; ".join(problems))
+                return res
     # Each measurement on its own: one engine's success never stands in
     # for the other's failure.
     out_pop = poppler_words(out, size[1])

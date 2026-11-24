@@ -123,9 +123,15 @@ def main():
         sys.exit(__doc__)
     d = json.load(open(sys.argv[1]))
     if "results" in d:
+        # The committed projections are page 1's, keyed by (id, kind): a
+        # report of other pages (`--pages spread`) is not one of them.
+        if any("page" in r for r in d["results"]):
+            sys.exit("redact-results-projection: a --pages spread report (runs keyed by page) is not projected")
         out = {"results": [eval_run(r) for r in d["results"]],
                "skipped": [str(s[0]) for s in d.get("skipped", [])]}
     elif "runs" in d:
+        if any("page" in r for r in d["runs"]):
+            sys.exit("redact-results-projection: a --pages spread refusal report is not projected")
         out = {"summary": summary(d.get("summary") or {}), "runs": [refusal_run(r) for r in d["runs"]]}
     else:
         sys.exit("not a result of eval-redact-corpus.py or analyze-redact-refusals.py")
