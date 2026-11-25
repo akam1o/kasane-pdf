@@ -153,8 +153,10 @@ def run(argv, timeout=None, text=False):
     started — is killed, the pipes closed, the command reaped, and the
     exception (`subprocess.TimeoutExpired`) raised: nothing it wrote is to
     be used. The group is signalled only while the command is unreaped,
-    so its id still belongs to it. A descendant that left the group is
-    not reaped here (it is not our child). `text`: the output decoded as
+    so its id still belongs to it: on an interrupt (Ctrl-C) during which
+    the command was already reaped, the group is not signalled — cleanup
+    there is best effort. A descendant is never reaped here (it is not
+    our child). `text`: the output decoded as
     UTF-8 with replacement (the fields read from it are ASCII)."""
     p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                          start_new_session=True)
