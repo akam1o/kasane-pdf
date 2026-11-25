@@ -98,6 +98,13 @@ words. Usage:
                                 recording its page)
         [--geometry plain|any] (plain, the default: plain MediaBox pages only)
         [--ink]                (an `ink` rect on every page)
+
+Every external command runs bounded, in a process group of its own
+killed as a whole on timeout (TOOL_TIMEOUT s per tool, REDACT_TIMEOUT s
+per `redact`): a render, text or structure tool that does not finish is
+a measurement not established (the run `incomplete`), never a result; a
+`redact` that does not finish is `incomplete`; an `ink` rect whose
+render did not finish is listed in `skipped` with its reason.
 """
 
 import collections
@@ -106,6 +113,8 @@ import json
 import math
 import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -118,7 +127,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS = os.environ.get("KASANE_CORPUS_DIR") or os.path.join(ROOT, "compat", "corpus")
 MANIFEST = os.path.join(ROOT, "compat", "manifest.yaml")
 DPI = 100
+# Every external command is bounded (`run`): a text, render or
+# structure tool by TOOL_TIMEOUT, `redact` by REDACT_TIMEOUT.
 TOOL_TIMEOUT = 120
+REDACT_TIMEOUT = 600
 # The page evaluated (1 unless --pages spread sets each in turn).
 PAGE = 1
 # `--geometry any`: the page's displayed frame, (rotate, crop box), set
@@ -133,17 +145,49 @@ TEXT_REASONS = ("not_installed", "exit_status", "crashed", "timeout", "no_output
                 "empty_while_mupdf_has_text", "not_measured")
 
 
+def run(argv, timeout=None, text=False):
+    """`subprocess.run(argv, capture_output=True)`, bounded: the command
+    runs in a process group of its own; when it has not exited and closed
+    its output within `timeout` seconds (None: TOOL_TIMEOUT, read at the
+    call), or on any exception, the whole group — the command and what it
+    started — is killed, the pipes closed, the command reaped, and the
+    exception (`subprocess.TimeoutExpired`) raised: nothing it wrote is to
+    be used. The group is signalled only while the command is unreaped,
+    so its id still belongs to it: on an interrupt (Ctrl-C) during which
+    the command was already reaped, the group is not signalled — cleanup
+    there is best effort. A descendant is never reaped here (it is not
+    our child). `text`: the output decoded as
+    UTF-8 with replacement (the fields read from it are ASCII)."""
+    p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         start_new_session=True)
+    try:
+        out, err = p.communicate(timeout=TOOL_TIMEOUT if timeout is None else timeout)
+    except BaseException:
+        if p.returncode is None:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        for f in (p.stdout, p.stderr):
+            f.close()
+        p.wait()
+        raise
+    if text:
+        out, err = out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+    return subprocess.CompletedProcess(argv, p.returncode, out, err)
+
+
 def tool(name):
     """The command for a text tool ($KASANE_EVAL_<NAME> replaces it: tests)."""
     return os.environ.get("KASANE_EVAL_" + name.upper()) or name
 
 
-def run_tool(argv, timeout=TOOL_TIMEOUT):
+def run_tool(argv, timeout=None):
     """(state, reason, stdout bytes): error / timeout with the reason, or
     None and the output. The exit status is always checked; a negative
     one (a signal) is a crash."""
     try:
-        r = subprocess.run(argv, capture_output=True, timeout=timeout)
+        r = run(argv, timeout=timeout)
     except FileNotFoundError:
         return "error", "not_installed", None
     except subprocess.TimeoutExpired:
@@ -201,7 +245,10 @@ def path_of(f):
 
 def plain_geometry(pdf):
     """(width, height) when the page is plain MediaBox space, else None."""
-    r = subprocess.run(["pdfinfo", "-box", "-f", str(PAGE), "-l", str(PAGE), pdf], capture_output=True, text=True, errors="replace")
+    try:
+        r = run(["pdfinfo", "-box", "-f", str(PAGE), "-l", str(PAGE), pdf], text=True)
+    except subprocess.TimeoutExpired:
+        return None
     if r.returncode != 0:
         return None
     rot = re.search(rf"Page\s+{PAGE} rot:\s+(\d+)", r.stdout)
@@ -227,7 +274,10 @@ def page_frame(pdf):
     # Bytes: qpdf's JSON may carry a string that is not UTF-8 (only boxes,
     # /Rotate, /UserUnit and /Parent links are read here); and its
     # diagnostics on stderr need not be text either.
-    r = subprocess.run(["qpdf", "--json", "--json-key=pages", "--json-key=qpdf", pdf], capture_output=True)
+    try:
+        r = run(["qpdf", "--json", "--json-key=pages", "--json-key=qpdf", pdf])
+    except subprocess.TimeoutExpired:
+        return None
     try:
         d = json.loads(r.stdout.decode("utf-8", "surrogateescape"))
         objs = d["qpdf"][1]
@@ -342,11 +392,15 @@ def poppler_words(pdf, height):
 def ink_rect(pdf, size, tmp):
     """`--ink`: a window of a sixth of the page each way (in the displayed
     frame) around the inked pixel of the input's render nearest the
-    page's centre; None on a blank page."""
+    page's centre; None on a blank page; "render_timeout" or
+    "render_failed" when the input's render did not complete (no rect:
+    the page is not taken as blank)."""
     try:
         w0, h0, a = render(pdf, os.path.join(tmp, "ink"))
+    except subprocess.TimeoutExpired:
+        return "render_timeout"
     except (ValueError, OSError, subprocess.CalledProcessError):
-        return None
+        return "render_failed"
     cx, cy = w0 / 2, h0 / 2
     best = None
     for y in range(h0):
@@ -424,7 +478,10 @@ def mupdf_chars(pdf, size):
 
 
 def page_count(pdf):
-    r = subprocess.run([tool("pdfinfo"), pdf], capture_output=True, text=True, errors="replace", timeout=TOOL_TIMEOUT)
+    try:
+        r = run([tool("pdfinfo"), pdf], text=True)
+    except subprocess.TimeoutExpired:
+        return None
     m = re.search(r"^Pages:\s+(\d+)", r.stdout, re.M) if r.returncode == 0 else None
     return int(m.group(1)) if m else None
 
@@ -434,14 +491,28 @@ def image_digests(pdf, tmp, tag):
     import hashlib
     d = os.path.join(tmp, "img-" + tag)
     os.makedirs(d, exist_ok=True)
-    subprocess.run(["pdfimages", "-all", "-f", str(PAGE), "-l", str(PAGE), pdf, os.path.join(d, "i")], capture_output=True)
+    try:
+        r = run(["pdfimages", "-all", "-f", str(PAGE), "-l", str(PAGE), pdf, os.path.join(d, "i")])
+    except subprocess.TimeoutExpired:
+        return None
+    if r.returncode != 0:
+        return None
     return collections.Counter(hashlib.sha256(open(os.path.join(d, f), "rb").read()).hexdigest()
                                for f in sorted(os.listdir(d)))
 
 
 def render(pdf, base):
-    subprocess.run(["pdftoppm", *crop(), "-r", str(DPI), "-gray", "-f", str(PAGE), "-l", str(PAGE), "-singlefile", pdf, base],
-                   capture_output=True, check=True)
+    """The page as an 8-bit grey PGM by Poppler: (width, height,
+    samples). An earlier file of that name is removed first, so a render
+    that fails, crashes or times out never leaves one to be read;
+    `subprocess.TimeoutExpired`, `subprocess.CalledProcessError`,
+    `OSError` or `ValueError` otherwise."""
+    if os.path.exists(base + ".pgm"):
+        os.remove(base + ".pgm")
+    argv = ["pdftoppm", *crop(), "-r", str(DPI), "-gray", "-f", str(PAGE), "-l", str(PAGE), "-singlefile", pdf, base]
+    r = run(argv)
+    if r.returncode != 0:
+        raise subprocess.CalledProcessError(r.returncode, argv)
     return parse_pgm(open(base + ".pgm", "rb").read())
 
 
@@ -483,7 +554,7 @@ def pixel_checks(inp, out, rect, size, tmp):
     try:
         w0, h0, a = render(inp, os.path.join(tmp, "in"))
         w1, h1, b = render(out, os.path.join(tmp, "out"))
-    except (ValueError, OSError, subprocess.CalledProcessError):
+    except (ValueError, OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return "unreadable", None, None
     if (w0, h0) != (w1, h1):
         return None, None, None
@@ -512,7 +583,10 @@ def ink_not_from_images(inp, out, rect, size, tmp):
     form, so blending sees nothing either): ink that is not image
     samples. `None` when the output cannot be rewritten so."""
     plain = os.path.join(tmp, "plain.pdf")
-    q = subprocess.run(["qpdf", "--qdf", "--object-streams=disable", out, plain], capture_output=True)
+    try:
+        q = run(["qpdf", "--qdf", "--object-streams=disable", out, plain])
+    except subprocess.TimeoutExpired:
+        return None
     if q.returncode not in (0, 3) or not os.path.exists(plain):
         return None
     data = open(plain, "rb").read()
@@ -530,7 +604,10 @@ def ink_not_from_images(inp, out, rect, size, tmp):
     parts.append(data[pos:])
     blank, fixed = os.path.join(tmp, "blank.pdf"), os.path.join(tmp, "blank-fixed.pdf")
     open(blank, "wb").write(b"".join(parts))
-    fx = subprocess.run(["fix-qdf", blank], capture_output=True)
+    try:
+        fx = run(["fix-qdf", blank])
+    except subprocess.TimeoutExpired:
+        return None
     if fx.returncode != 0:
         return None
     open(fixed, "wb").write(fx.stdout)
@@ -555,11 +632,19 @@ def run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args=()):
     user = [f"{v:.3f}" for v in (to_user(rect, FRAME) if FRAME is not None else rect)]
     args = [kasane, "redact", pdf, "--page", str(PAGE), "--rect"] + user + list(extra_args) + ["--output", out]
     t0 = time.monotonic()
-    r = subprocess.run(args, capture_output=True, text=True, errors="replace", timeout=600)
+    try:
+        r = run(args, timeout=REDACT_TIMEOUT, text=True)
+    except subprocess.TimeoutExpired:
+        r = None
     res = {"kind": kind, "rect": [round(v, 2) for v in rect], "seconds": round(time.monotonic() - t0, 3)}
     if FRAME is not None:
         # The rect as passed to redact (default user space), to replay it.
         res["user_rect"] = [float(v) for v in user]
+    if r is None:
+        # Neither a refusal nor a success: what it may have written is
+        # not looked at.
+        res.update(outcome="incomplete", reason=f"redact did not finish within {REDACT_TIMEOUT} s")
+        return res
     if r.returncode != 0:
         msg = (r.stderr or r.stdout).strip().splitlines()[-1] if (r.stderr or r.stdout).strip() else ""
         m = re.match(r"error \[unsupported feature\]: unsupported PDF feature: ([^(]*?)\s*(\(.*)?$", msg)
@@ -583,9 +668,16 @@ def run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args=()):
         problems.append("success without an output file")
         res.update(outcome="unexpected", reason="; ".join(problems))
         return res
-    q = subprocess.run(["qpdf", "--check", out], capture_output=True, text=True, errors="replace")
-    if q.returncode not in (0, 3):
-        problems.append("qpdf --check failed")
+    try:
+        q = run(["qpdf", "--check", out], text=True)
+    except subprocess.TimeoutExpired:
+        q = None
+    if q is None:
+        incomplete_tools = ["qpdf_check"]
+    else:
+        incomplete_tools = []
+        if q.returncode not in (0, 3):
+            problems.append("qpdf --check failed")
     m = re.search(r"(\d+) finding", r.stdout)
     res["elsewhere"] = sum(1 for l in r.stdout.splitlines() if " also shown on page " in l or " also stored in object " in l)
     n_in, n_out = page_count(pdf), page_count(out)
@@ -595,6 +687,7 @@ def run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args=()):
         incomplete = []
         if n_in != n_out:
             problems.append("the page count changed")
+    incomplete += incomplete_tools
     if n_out is not None and PAGE > n_out:
         # The page evaluated is gone: nothing more can be measured.
         problems.append(f"page {PAGE} is not in the output")
@@ -675,9 +768,12 @@ def run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args=()):
     # reported still drawn elsewhere.
     if res.get("images_edited"):
         di, do = image_digests(pdf, tmp, "in"), image_digests(out, tmp, "out")
-        res["images_unchanged"] = sum((di & do).values())
-        if di and not (di - do) and not res.get("elsewhere"):
-            problems.append("an image was reported edited but every image of the page is unchanged")
+        if di is None or do is None:
+            incomplete.append("pdfimages")
+        else:
+            res["images_unchanged"] = sum((di & do).values())
+            if di and not (di - do) and not res.get("elsewhere"):
+                problems.append("an image was reported edited but every image of the page is unchanged")
     # The one known false signal: unchanged ink inside the rect that is
     # all black where images were zeroed (samples already black look
     # unchanged). Still unexpected — black content left over a zeroed
@@ -756,7 +852,7 @@ def main():
     # MuPDF is a required witness, not an optional one: without it the
     # character checks would silently not run.
     for t in ("qpdf", "pdftotext", "pdftoppm", "pdfinfo", "mutool"):
-        if subprocess.run(["which", tool(t)], capture_output=True).returncode != 0:
+        if shutil.which(tool(t)) is None:
             sys.exit(f"{t} not found")
     results = []
     skipped = []
@@ -791,7 +887,9 @@ def main():
             if ink:
                 with tempfile.TemporaryDirectory() as tmp:
                     r = ink_rect(pdf, size, tmp)
-                if r is not None:
+                if isinstance(r, str):
+                    skipped.append((f"{f['id']}#{PAGE}#ink", r))
+                elif r is not None:
                     rects.append(("ink", r))
             for kind, rect in rects:
                 with tempfile.TemporaryDirectory() as tmp:

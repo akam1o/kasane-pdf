@@ -926,13 +926,13 @@ sys.exit(1)
 class EvalWitness(unittest.TestCase):
     def test_unrecognised_mupdf_output_is_not_measured(self):
         ev = load("eval_redact_corpus", "scripts/eval-redact-corpus.py")
-        orig = ev.subprocess.run
-        ev.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=b"<garbage/>", stderr=b"")
+        orig = ev.run
+        ev.run = lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=b"<garbage/>", stderr=b"")
         try:
             m = ev.mupdf_chars("x.pdf", (100, 100))
             self.assertEqual((m["state"], m["reason"]), ("incomplete", "no_page"))
         finally:
-            ev.subprocess.run = orig
+            ev.run = orig
 
 
 class RedactCorpusCompare(unittest.TestCase):
