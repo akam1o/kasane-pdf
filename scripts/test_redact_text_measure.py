@@ -250,7 +250,7 @@ class RunOutcomes(unittest.TestCase):
             "image_digests": lambda pdf, tmp, tag: __import__("collections").Counter({tag: 1}),
         }
         old = {k: getattr(ev, k) for k in stubs}
-        real_run = ev.subprocess.run
+        real_run = ev.run
 
         def fake_run(argv, *a, **k):
             if argv[1:2] == ["redact"]:
@@ -263,13 +263,13 @@ class RunOutcomes(unittest.TestCase):
         try:
             for k, v in stubs.items():
                 setattr(ev, k, v)
-            ev.subprocess.run = fake_run
+            ev.run = fake_run
             with tempfile.TemporaryDirectory() as tmp:
                 return ev.run_one("kasane", os.path.join(tmp, "in.pdf"), "block", RECT, (200, 200), in_pop, in_mu, tmp)
         finally:
             for k, v in old.items():
                 setattr(ev, k, v)
-            ev.subprocess.run = real_run
+            ev.run = real_run
 
     def test_all_measured(self):
         r = self.run_one(m_ok([WORD]), m_ok(chars=[CHAR]), m_ok([WORD]), m_ok(chars=[CHAR]))
@@ -597,28 +597,28 @@ class Geometry(unittest.TestCase):
     def test_page_frame_reads_qpdf_json_that_is_not_utf8(self):
         out = (b'{"pages": [{"object": "3 0 R"}], "qpdf": [{}, {'
                b'"obj:3 0 R": {"value": {"/MediaBox": [0, 0, 200, 100], "/Rotate": 90, "/T": "\xa4"}}}]}')
-        real, page = ev.subprocess.run, ev.PAGE
+        real, page = ev.run, ev.PAGE
 
         def fake(argv, **k):
             # Binary mode: the bytes are decoded by page_frame itself.
             self.assertFalse(k.get("text") or k.get("encoding") or k.get("universal_newlines"), k)
             return subprocess.CompletedProcess(argv, 0, stdout=out, stderr=b"\xff")
-        ev.subprocess.run = fake
+        ev.run = fake
         try:
             ev.PAGE = 1
             self.assertEqual(ev.page_frame("x.pdf"), ((100.0, 200.0), (90, [0.0, 0.0, 200.0, 100.0])))
         finally:
-            ev.subprocess.run, ev.PAGE = real, page
+            ev.run, ev.PAGE = real, page
 
     def test_tool_output_that_is_not_utf8_does_not_stop_the_run(self):
-        real = ev.subprocess.run
+        real = ev.run
         try:
             # pdfinfo / qpdf --check output with a non-UTF-8 byte (a title, a message).
-            ev.subprocess.run = lambda argv, **k: real(
-                ["python3", "-c", "import sys;sys.stdout.buffer.write(b'Title: \\xa4\\nPages: 7\\n')"], **k)
+            ev.run = lambda argv, **k: real(
+                [sys.executable, "-c", "import sys;sys.stdout.buffer.write(b'Title: \\xa4\\nPages: 7\\n')"], **k)
             self.assertEqual(ev.page_count("x.pdf"), 7)
         finally:
-            ev.subprocess.run = real
+            ev.run = real
 
     def test_pgm_samples_that_look_like_white_space(self):
         raster = bytes([9, 10, 13, 32, 0, 255])
@@ -643,6 +643,108 @@ class Geometry(unittest.TestCase):
                 proj.main()
             self.assertNotEqual(e.exception.code, 0, marker)
             os.unlink(f.name)
+
+
+class BoundedRuns(unittest.TestCase):
+    """Every external command is bounded (`run`): a command that hangs,
+    one that leaves a child behind, one that writes part of its output and
+    hangs — each is stopped, its whole process group killed and reaped,
+    and nothing it wrote is taken as a result."""
+
+    def alive(self, pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        # A zombie (exited, not yet reaped by its parent) is not running.
+        st = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        return bool(st) and not st.startswith("Z")
+
+    def test_a_hung_command_and_its_children_are_killed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pids = os.path.join(tmp, "pids")
+            # The command starts a child (which ignores SIGTERM) and both hang.
+            script = (f"trap '' TERM; sleep 300 & echo $! >> {pids}; echo $$ >> {pids}; wait")
+            import time
+            t0 = time.monotonic()
+            with self.assertRaises(subprocess.TimeoutExpired):
+                ev.run(["sh", "-c", script], timeout=1)
+            self.assertLess(time.monotonic() - t0, 30)
+            time.sleep(0.2)
+            with open(pids) as fh:
+                listed = fh.read().split()
+            for pid in map(int, listed):
+                self.assertFalse(self.alive(pid), pid)
+
+    def test_a_child_left_running_after_exit_is_killed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pids = os.path.join(tmp, "pids")
+            r = ev.run(["sh", "-c", f"sleep 300 >/dev/null 2>&1 & echo $! > {pids}; exit 0"], timeout=30)
+            self.assertEqual(r.returncode, 0)
+            import time
+            time.sleep(0.2)
+            with open(pids) as fh:
+                self.assertFalse(self.alive(int(fh.read())))
+
+    def test_a_partial_render_is_not_read(self):
+        """pdftoppm writes part of a PGM and hangs: the render raises; an
+        earlier PGM of the same name is not read either."""
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = os.path.join(tmp, "pdftoppm")
+            with open(fake, "w") as fh:
+                fh.write('#!/bin/sh\nfor a; do base=$a; done\nprintf \'P5\\n4 4\\n255\\n\\0\' > "$base.pgm"\nsleep 300\n')
+            os.chmod(fake, 0o755)
+            base = os.path.join(tmp, "in")
+            env_path = os.environ["PATH"]
+            os.environ["PATH"] = tmp + os.pathsep + env_path
+            old = ev.TOOL_TIMEOUT
+            ev.TOOL_TIMEOUT = 1
+            try:
+                with open(base + ".pgm", "wb") as fh:
+                    fh.write(b"P5\n1 1\n255\n\xff")  # a stale, complete one
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    ev.render("x.pdf", base)
+                # pixel_checks: not measured; ink_rect: no rect, a reason.
+                self.assertEqual(ev.pixel_checks("a.pdf", "b.pdf", RECT, (200, 200), tmp)[0], "unreadable")
+                self.assertEqual(ev.ink_rect("a.pdf", (200, 200), tmp), "render_timeout")
+            finally:
+                os.environ["PATH"] = env_path
+                ev.TOOL_TIMEOUT = old
+
+    def test_a_render_that_fails_after_writing_is_not_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = os.path.join(tmp, "pdftoppm")
+            with open(fake, "w") as fh:
+                fh.write('#!/bin/sh\nfor a; do base=$a; done\nprintf \'P5\\n1 1\\n255\\n\\377\' > "$base.pgm"\nexit 3\n')
+            os.chmod(fake, 0o755)
+            env_path = os.environ["PATH"]
+            os.environ["PATH"] = tmp + os.pathsep + env_path
+            try:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    ev.render("x.pdf", os.path.join(tmp, "in"))
+                self.assertEqual(ev.ink_rect("a.pdf", (200, 200), tmp), "render_failed")
+            finally:
+                os.environ["PATH"] = env_path
+
+    def test_a_redact_that_does_not_finish_is_incomplete(self):
+        real, old = ev.run, ev.REDACT_TIMEOUT
+
+        def fake(argv, timeout=None, **k):
+            if argv[1:2] == ["redact"]:
+                self.assertEqual(timeout, ev.REDACT_TIMEOUT)
+                with open(argv[-1], "wb") as fh:
+                    fh.write(b"%PDF-1.7\n")  # written before it hung
+                raise subprocess.TimeoutExpired(argv, timeout)
+            raise AssertionError(f"nothing else may run: {argv}")
+        ev.run = fake
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                r = ev.run_one("kasane", os.path.join(tmp, "in.pdf"), "block", RECT, (200, 200),
+                               m_ok([WORD]), m_ok(chars=[CHAR]), tmp)
+        finally:
+            ev.run, ev.REDACT_TIMEOUT = real, old
+        self.assertEqual(r["outcome"], "incomplete", r)
+        self.assertIn("did not finish", r["reason"])
 
 
 if __name__ == "__main__":
