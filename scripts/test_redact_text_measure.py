@@ -594,6 +594,17 @@ class Geometry(unittest.TestCase):
         # No frame: no conversion (the plain mode never calls it).
         self.assertIsNone(ev.FRAME)
 
+    def test_page_frame_reads_qpdf_json_that_is_not_utf8(self):
+        out = (b'{"pages": [{"object": "3 0 R"}], "qpdf": [{}, {'
+               b'"obj:3 0 R": {"value": {"/MediaBox": [0, 0, 200, 100], "/Rotate": 90, "/T": "\xa4"}}}]}')
+        real = ev.subprocess.run
+        ev.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout=out, stderr=b"\xff")
+        try:
+            ev.PAGE = 1
+            self.assertEqual(ev.page_frame("x.pdf"), ((100.0, 200.0), (90, [0.0, 0.0, 200.0, 100.0])))
+        finally:
+            ev.subprocess.run = real
+
     def test_pgm_samples_that_look_like_white_space(self):
         raster = bytes([9, 10, 13, 32, 0, 255])
         self.assertEqual(ev.parse_pgm(b"P5\n3 2\n255\n" + raster), (3, 2, raster))

@@ -224,9 +224,12 @@ def page_frame(pdf):
     for a /Rotate not a multiple of 90, a /UserUnit other than 1, an
     unreadable box, or a side under 1 pt (MuPDF draws a unit square
     instead, so the witnesses would not share a frame)."""
-    r = subprocess.run(["qpdf", "--json", "--json-key=pages", "--json-key=qpdf", pdf], capture_output=True, text=True)
+    # Bytes: qpdf's JSON may carry a string that is not UTF-8 (only boxes,
+    # /Rotate, /UserUnit and /Parent links are read here); and its
+    # diagnostics on stderr need not be text either.
+    r = subprocess.run(["qpdf", "--json", "--json-key=pages", "--json-key=qpdf", pdf], capture_output=True)
     try:
-        d = json.loads(r.stdout)
+        d = json.loads(r.stdout.decode("utf-8", "surrogateescape"))
         objs = d["qpdf"][1]
         node = "obj:" + d["pages"][PAGE - 1]["object"]
     except (ValueError, KeyError, IndexError, TypeError):
