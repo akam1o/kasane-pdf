@@ -660,31 +660,59 @@ class BoundedRuns(unittest.TestCase):
         st = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
         return bool(st) and not st.startswith("Z")
 
+    def wait_for(self, cond, what, limit=10.0):
+        import time
+        end = time.monotonic() + limit
+        while not cond():
+            if time.monotonic() > end:
+                self.fail(what)
+            time.sleep(0.05)
+
+    def pids(self, path, n):
+        def ready():
+            return os.path.exists(path) and len(open(path).read().split()) >= n
+        self.wait_for(ready, f"{n} pids recorded")
+        with open(path) as fh:
+            listed = [int(x) for x in fh.read().split()]
+        self.assertEqual(len(listed), n)
+        return listed
+
     def test_a_hung_command_and_its_children_are_killed(self):
         with tempfile.TemporaryDirectory() as tmp:
             pids = os.path.join(tmp, "pids")
             # The command starts a child (which ignores SIGTERM) and both hang.
-            script = (f"trap '' TERM; sleep 300 & echo $! >> {pids}; echo $$ >> {pids}; wait")
-            import time
-            t0 = time.monotonic()
+            script = f"trap '' TERM; sleep 300 & echo $! >> {pids}; echo $$ >> {pids}; wait"
             with self.assertRaises(subprocess.TimeoutExpired):
-                ev.run(["sh", "-c", script], timeout=1)
-            self.assertLess(time.monotonic() - t0, 30)
-            time.sleep(0.2)
-            with open(pids) as fh:
-                listed = fh.read().split()
-            for pid in map(int, listed):
-                self.assertFalse(self.alive(pid), pid)
+                ev.run(["sh", "-c", script], timeout=3)
+            for pid in self.pids(pids, 2):
+                self.wait_for(lambda: not self.alive(pid), f"{pid} killed")
 
-    def test_a_child_left_running_after_exit_is_killed(self):
+    def test_a_child_holding_the_output_after_exit_is_a_timeout(self):
+        """The command exits, a child it started keeps its output open:
+        not finished — the group is killed and nothing is returned."""
         with tempfile.TemporaryDirectory() as tmp:
             pids = os.path.join(tmp, "pids")
-            r = ev.run(["sh", "-c", f"sleep 300 >/dev/null 2>&1 & echo $! > {pids}; exit 0"], timeout=30)
-            self.assertEqual(r.returncode, 0)
-            import time
-            time.sleep(0.2)
-            with open(pids) as fh:
-                self.assertFalse(self.alive(int(fh.read())))
+            with self.assertRaises(subprocess.TimeoutExpired):
+                ev.run(["sh", "-c", f"sleep 300 & echo $! > {pids}; exit 0"], timeout=3)
+            (pid,) = self.pids(pids, 1)
+            self.wait_for(lambda: not self.alive(pid), f"{pid} killed")
+
+    def test_a_render_that_writes_nothing_does_not_read_a_stale_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = os.path.join(tmp, "pdftoppm")
+            with open(fake, "w") as fh:
+                fh.write("#!/bin/sh\nexit 0\n")
+            os.chmod(fake, 0o755)
+            base = os.path.join(tmp, "in")
+            with open(base + ".pgm", "wb") as fh:
+                fh.write(b"P5\n1 1\n255\n\xff")  # a stale, complete one
+            env_path = os.environ["PATH"]
+            os.environ["PATH"] = tmp + os.pathsep + env_path
+            try:
+                with self.assertRaises(OSError):
+                    ev.render("x.pdf", base)
+            finally:
+                os.environ["PATH"] = env_path
 
     def test_a_partial_render_is_not_read(self):
         """pdftoppm writes part of a PGM and hangs: the render raises; an

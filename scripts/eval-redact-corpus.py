@@ -113,6 +113,7 @@ import json
 import math
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -146,31 +147,32 @@ TEXT_REASONS = ("not_installed", "exit_status", "crashed", "timeout", "no_output
 
 def run(argv, timeout=None, text=False):
     """`subprocess.run(argv, capture_output=True)`, bounded: the command
-    runs in a process group of its own; past `timeout` seconds the whole
-    group (the command and anything it started) is killed and reaped and
-    `subprocess.TimeoutExpired` is raised — nothing it wrote is to be
-    used (`timeout` None: TOOL_TIMEOUT, read at the call). Whatever it left running in its group when it exits is killed
-    too. `text`: the output decoded as UTF-8 with replacement (the fields
-    read from it are ASCII)."""
+    runs in a process group of its own; when it has not exited and closed
+    its output within `timeout` seconds (None: TOOL_TIMEOUT, read at the
+    call), or on any exception, the whole group — the command and what it
+    started — is killed, the pipes closed, the command reaped, and the
+    exception (`subprocess.TimeoutExpired`) raised: nothing it wrote is to
+    be used. The group is signalled only while the command is unreaped,
+    so its id still belongs to it. A descendant that left the group is
+    not reaped here (it is not our child). `text`: the output decoded as
+    UTF-8 with replacement (the fields read from it are ASCII)."""
     p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                          start_new_session=True)
     try:
         out, err = p.communicate(timeout=TOOL_TIMEOUT if timeout is None else timeout)
     except BaseException:
-        _kill_group(p)
-        p.communicate()
+        if p.returncode is None:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        for f in (p.stdout, p.stderr):
+            f.close()
+        p.wait()
         raise
-    _kill_group(p)
     if text:
         out, err = out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
     return subprocess.CompletedProcess(argv, p.returncode, out, err)
-
-
-def _kill_group(p):
-    try:
-        os.killpg(p.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
 
 
 def tool(name):
@@ -848,7 +850,7 @@ def main():
     # MuPDF is a required witness, not an optional one: without it the
     # character checks would silently not run.
     for t in ("qpdf", "pdftotext", "pdftoppm", "pdfinfo", "mutool"):
-        if subprocess.run(["which", tool(t)], capture_output=True).returncode != 0:
+        if shutil.which(tool(t)) is None:
             sys.exit(f"{t} not found")
     results = []
     skipped = []
