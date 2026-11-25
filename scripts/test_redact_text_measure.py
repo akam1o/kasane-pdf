@@ -597,11 +597,26 @@ class Geometry(unittest.TestCase):
     def test_page_frame_reads_qpdf_json_that_is_not_utf8(self):
         out = (b'{"pages": [{"object": "3 0 R"}], "qpdf": [{}, {'
                b'"obj:3 0 R": {"value": {"/MediaBox": [0, 0, 200, 100], "/Rotate": 90, "/T": "\xa4"}}}]}')
-        real = ev.subprocess.run
-        ev.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a[0], 0, stdout=out, stderr=b"\xff")
+        real, page = ev.subprocess.run, ev.PAGE
+
+        def fake(argv, **k):
+            # Binary mode: the bytes are decoded by page_frame itself.
+            self.assertFalse(k.get("text") or k.get("encoding") or k.get("universal_newlines"), k)
+            return subprocess.CompletedProcess(argv, 0, stdout=out, stderr=b"\xff")
+        ev.subprocess.run = fake
         try:
             ev.PAGE = 1
             self.assertEqual(ev.page_frame("x.pdf"), ((100.0, 200.0), (90, [0.0, 0.0, 200.0, 100.0])))
+        finally:
+            ev.subprocess.run, ev.PAGE = real, page
+
+    def test_tool_output_that_is_not_utf8_does_not_stop_the_run(self):
+        real = ev.subprocess.run
+        try:
+            # pdfinfo / qpdf --check output with a non-UTF-8 byte (a title, a message).
+            ev.subprocess.run = lambda argv, **k: real(
+                ["python3", "-c", "import sys;sys.stdout.buffer.write(b'Title: \\xa4\\nPages: 7\\n')"], **k)
+            self.assertEqual(ev.page_count("x.pdf"), 7)
         finally:
             ev.subprocess.run = real
 

@@ -201,7 +201,7 @@ def path_of(f):
 
 def plain_geometry(pdf):
     """(width, height) when the page is plain MediaBox space, else None."""
-    r = subprocess.run(["pdfinfo", "-box", "-f", str(PAGE), "-l", str(PAGE), pdf], capture_output=True, text=True)
+    r = subprocess.run(["pdfinfo", "-box", "-f", str(PAGE), "-l", str(PAGE), pdf], capture_output=True, text=True, errors="replace")
     if r.returncode != 0:
         return None
     rot = re.search(rf"Page\s+{PAGE} rot:\s+(\d+)", r.stdout)
@@ -424,7 +424,7 @@ def mupdf_chars(pdf, size):
 
 
 def page_count(pdf):
-    r = subprocess.run([tool("pdfinfo"), pdf], capture_output=True, text=True, timeout=TOOL_TIMEOUT)
+    r = subprocess.run([tool("pdfinfo"), pdf], capture_output=True, text=True, errors="replace", timeout=TOOL_TIMEOUT)
     m = re.search(r"^Pages:\s+(\d+)", r.stdout, re.M) if r.returncode == 0 else None
     return int(m.group(1)) if m else None
 
@@ -555,7 +555,7 @@ def run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args=()):
     user = [f"{v:.3f}" for v in (to_user(rect, FRAME) if FRAME is not None else rect)]
     args = [kasane, "redact", pdf, "--page", str(PAGE), "--rect"] + user + list(extra_args) + ["--output", out]
     t0 = time.monotonic()
-    r = subprocess.run(args, capture_output=True, text=True, timeout=600)
+    r = subprocess.run(args, capture_output=True, text=True, errors="replace", timeout=600)
     res = {"kind": kind, "rect": [round(v, 2) for v in rect], "seconds": round(time.monotonic() - t0, 3)}
     if FRAME is not None:
         # The rect as passed to redact (default user space), to replay it.
@@ -583,7 +583,7 @@ def run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args=()):
         problems.append("success without an output file")
         res.update(outcome="unexpected", reason="; ".join(problems))
         return res
-    q = subprocess.run(["qpdf", "--check", out], capture_output=True, text=True)
+    q = subprocess.run(["qpdf", "--check", out], capture_output=True, text=True, errors="replace")
     if q.returncode not in (0, 3):
         problems.append("qpdf --check failed")
     m = re.search(r"(\d+) finding", r.stdout)
