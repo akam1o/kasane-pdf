@@ -21,6 +21,7 @@ import sys
 import os
 import subprocess
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -774,8 +775,15 @@ class RendererBaselines(unittest.TestCase):
             (self.d / f"baseline-{platform}.json").write_text(
                 text if isinstance(text, str) else json.dumps(text or self.baseline(platform)))
 
+    # The script cases (`vr:`, `syn-`) the check requires, instead of
+    # verify-redact.py's and verify-renderers.py's own.
+    DECLARED = {"vr:other": "ok"}
+
     def run_check(self, platforms="linux-x86_64,darwin-arm64"):
         buf = io.StringIO()
+        real = crb.script_cases
+        crb.script_cases = lambda: dict(self.DECLARED)
+        self.addCleanup(setattr, crb, "script_cases", real)
         with contextlib.redirect_stdout(buf):
             code = crb.main(["--dump", str(self.dump), "--history", str(self.d / "history.json"),
                              "--baselines", str(self.d), "--platforms", platforms])
@@ -788,6 +796,37 @@ class RendererBaselines(unittest.TestCase):
 
     def test_consistent(self):
         self.assertEqual(self.run_check(), (0, "check-renderer-baselines: consistent (linux-x86_64, darwin-arm64)\n"))
+
+    def test_a_script_case_without_its_entries(self):
+        # Declared by verify-redact.py, not in the baselines; one in the
+        # baselines no script declares; one with another outcome.
+        self.DECLARED = {"vr:other": "refused", "vr:new": "ok", "syn-x": "ok"}
+        self.cases["syn-gone"] = {"outcome": "refused", "renderers": {}}
+        self.write()
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        for platform in ("linux-x86_64", "darwin-arm64"):
+            self.assertIn(f"{platform}:missing:vr:new", out)
+            self.assertIn(f"{platform}:missing:syn-x", out)
+            self.assertIn(f"{platform}:not_a_case:syn-gone", out)
+            self.assertIn(f"{platform}:outcome:vr:other:ok!=refused", out)
+
+    def test_the_real_script_cases_are_read(self):
+        got = crb.script_cases()
+        self.assertIn("vr:text", got)
+        self.assertIn("syn-xfa", got)
+        self.assertTrue(set(got.values()) <= {"ok", "refused"})
+
+    def test_a_synthetic_case_without_a_declared_outcome(self):
+        vr = types.SimpleNamespace(CASES=[("text", b"", [], "ok")])
+        for made, declared in (({"syn-a", "syn-b"}, {"syn-a": "ok"}), ({"syn-a"}, {"syn-a": "ok", "syn-b": "ok"})):
+            vrend = types.SimpleNamespace(load_verify_redact=lambda: vr, SYNTHETIC_OUTCOME=declared,
+                                          synthetic_cases=lambda _vr, made=made: [(n, b"", []) for n in made])
+            with self.assertRaises(SystemExit) as e:
+                crb.declared_cases(vrend)
+            self.assertIn("syn-b", str(e.exception))
+        vrend.synthetic_cases = lambda _vr: [("syn-a", b"", []), ("syn-b", b"", [])]
+        self.assertEqual(crb.declared_cases(vrend), {"vr:text": "ok", "syn-a": "ok", "syn-b": "ok"})
 
     def test_1_a_new_input_without_its_entries(self):
         (self.dump / "manifest-a-new.tsv").write_text("a-new.pdf\tGHSA-test\tredact --page 1 --rect 1 1 2 2\tquiet:Q\n")

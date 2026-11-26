@@ -29,7 +29,12 @@ This checks, for every required platform, before anything is run:
   candidate state (REMOVED, KEPT: `ok`; REFUSED: `refused`) — any other
   state, or none, fails;
 - every input of the dump is in history.json and every input of
-  history.json is in the dump.
+  history.json is in the dump;
+- every case of scripts/verify-redact.py (`vr:`) and every synthetic
+  case of verify-renderers.py (`syn-`) is in the baseline with the
+  outcome the script declares, and the baseline has no other — a
+  verify-redact case added without its baseline entries fails here, on
+  the pull request, not only in the full gate.
 
 `refused` is the outcome of kasane's `redact` (exit 1, a typed error,
 no output) — not a renderer's verdict, and not whether the refusal's
@@ -38,6 +43,7 @@ What the renderers draw is verify-renderers.py's (Full Gate, release
 verification). Exit 0 consistent, 1 not, 2 could not run.
 """
 import argparse
+import importlib.util
 import json
 import os
 import sys
@@ -106,8 +112,33 @@ def render_ok(m):
     return set(m) <= set(COUNTS) | set(FLAGS) | {"ink_left", "ink_left_not_judged"}
 
 
-def problems_of(dump, history, baselines, platforms):
+def script_cases():
+    """{case name: declared outcome} of verify-redact.py's cases (`vr:`)
+    and verify-renderers.py's synthetic ones, as verify-renderers.py
+    names them."""
+    spec = importlib.util.spec_from_file_location(
+        "verify_renderers", os.path.join(ROOT, "scripts", "verify-renderers.py"))
+    vrend = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(vrend)
+    return declared_cases(vrend)
+
+
+def declared_cases(vrend):
+    vr = vrend.load_verify_redact()
+    out = {f"vr:{name}": expect for name, _pdf, _args, expect in vr.CASES}
+    made = {name for name, _pdf, _args in vrend.synthetic_cases(vr)}
+    if made != set(vrend.SYNTHETIC_OUTCOME):
+        # A synthetic case generated without a declared outcome (or the
+        # reverse) would pass here and fail only in the full gate.
+        raise SystemExit("check-renderer-baselines: verify-renderers.py's synthetic cases and "
+                         f"SYNTHETIC_OUTCOME differ: {sorted(made ^ set(vrend.SYNTHETIC_OUTCOME))}")
+    out.update(vrend.SYNTHETIC_OUTCOME)
+    return out
+
+
+def problems_of(dump, history, baselines, platforms, declared=None):
     problems = []
+    declared = script_cases() if declared is None else declared
     rows = redact_inputs(dump)
     if not rows:
         return ["no_inputs"]
@@ -169,6 +200,15 @@ def problems_of(dump, history, baselines, platforms):
                     problems.append(f"{platform}:malformed_render:{name}:{rd}")
                 elif m.get("ink_left") or m.get("secret_extracted") or m.get("public_lost"):
                     problems.append(f"{platform}:leak_recorded:{name}:{rd}")
+        others = {n for n in cases if not n.startswith("adv:")}
+        for n in sorted(set(declared) - others):
+            problems.append(f"{platform}:missing:{n}")
+        for n in sorted(others - set(declared)):
+            problems.append(f"{platform}:not_a_case:{n}")
+        for n in sorted(set(declared) & others):
+            got = cases[n].get("outcome") if isinstance(cases[n], dict) else None
+            if got in OUTCOMES and got != declared[n]:
+                problems.append(f"{platform}:outcome:{n}:{got}!={declared[n]}")
         have = {n for n in cases if n.startswith("adv:")}
         for n in sorted(set(want) - have):
             problems.append(f"{platform}:missing:{n}")
