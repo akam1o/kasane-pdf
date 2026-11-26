@@ -328,7 +328,10 @@ class Check(unittest.TestCase):
         out = os.path.join(self.d, "mask.pdf")
         write_pdf(out, objs)
         self.assertTrue(czi.check(inp, out, 1, RECT, True)[0].startswith("residue:"))
+        objs[9] = (GRAY[:-2] + b" /Mask 6 0 R /SMaskInData 1 >>", gray())
         del objs[10]
+        write_pdf(out, objs)
+        self.assertTrue(czi.check(inp, out, 1, RECT, True)[0].startswith("residue:"))
         objs[9] = (GRAY[:-2] + b" /Mask 6 0 R >>", gray())
         write_pdf(out, objs)
         self.assertEqual(czi.check(inp, out, 1, RECT, True)[0], "zero:25")

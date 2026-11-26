@@ -53,7 +53,9 @@ Method (the rect in default user space of PAGE, 1-based):
     be the stored data of a stream `--elsewhere` allows (an image another
     page draws, or the mask that image uses: its /SMask, else its
     /Mask). An encrypted output: `unhandled` (qpdf's stored bytes are
-    decrypted, not the file's). An original or
+    decrypted, not the file's). Not covered: a copy re-encoded
+    differently, and an occurrence shorter than 32 bytes outside the
+    objects; the guarantee is about exact copies. An original or
     its mask with external data (/F): `unhandled`. An original with /Alternates or /OPI:
     `unhandled` (its other representations are not inventoried).
     A form with /Ref, a content stream with external data (/F) or a
@@ -592,7 +594,10 @@ def check(inp, out, page_no, rect, elsewhere=False):
                             d, _ = dout.stream(ref)
                             # The mask a reader uses: /SMask overrides /Mask
                             # (ISO 32000-2 Table 87).
+                            # A JPX /SMaskInData may override both: no mask credited.
                             m = d.get("/SMask") if d.get("/SMask") is not None else d.get("/Mask")
+                            if dout.val(d.get("/SMaskInData")) not in (None, 0):
+                                m = None
                             drawn |= {ref} | ({m} if isinstance(m, str) else set())
             # The file's bytes too, beyond the object table: every
             # occurrence of an original's bytes (32 or more), overlapping
