@@ -1152,6 +1152,68 @@
     }
    }
   },
+  "vr:image-mask": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:image-mask-inverted": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:image-mask-pattern": {
+   "outcome": "refused",
+   "renderers": {}
+  },
   "vr:image-shown-on-two-pages": {
    "outcome": "ok",
    "renderers": {
