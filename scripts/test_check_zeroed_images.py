@@ -89,7 +89,7 @@ class Check(unittest.TestCase):
 
     def test_zeroed_samples_are_zero(self):
         v, n = self.verdict({4: (b"<< >>", FULL), 5: (GRAY, gray())})
-        self.assertEqual((v, n), ("zero", 25))
+        self.assertEqual((v, n), ("zero:25", 25))
 
     def test_the_unredacted_page_is_a_residue(self):
         v, _ = czi.check(self.inp, self.inp, 1, RECT)
@@ -102,26 +102,27 @@ class Check(unittest.TestCase):
 
     def test_samples_just_outside_the_rect_are_not_counted(self):
         v, _ = self.verdict({4: (b"<< >>", FULL), 5: (GRAY, gray(poke={(4, 12): 9, (10, 12): 9, (7, 9): 9, (7, 15): 9}))})
-        self.assertEqual(v, "zero")
+        self.assertEqual(v, "zero:25")
 
     def test_a_quarter_turn(self):
         # page x = 200 - 200 v, page y = 200 u: the cells under the rect
         # are x 5..9 and y 5..9; those of the upright placement are not.
         content = b"q 0 200 -200 0 200 0 cm /Im0 Do Q"
-        self.assertEqual(self.verdict({4: (b"<< >>", content), 5: (GRAY, gray(zero=((5, 10), (5, 10))))})[0], "zero")
+        self.assertEqual(self.verdict({4: (b"<< >>", content), 5: (GRAY, gray(zero=((5, 10), (5, 10))))})[0][:5], "zero:")
         v, _ = self.verdict({4: (b"<< >>", content), 5: (GRAY, gray())})
         self.assertTrue(v.startswith("residue:"), v)
         v, _ = self.verdict({4: (b"<< >>", content), 5: (GRAY, gray(zero=((0, 0), (0, 0))))})
         self.assertTrue(v.startswith("residue:"), v)
 
     def test_a_cell_boundary_on_the_rect_edge(self):
-        # 0.3 * 3 is 0.8999999999999999 and 0.3 * 6 1.7999999999999998:
-        # the cells on either side of the edges only touch the rect.
-        cells = czi.cells_in_rect((3, 0, 0, 3, 0, 0), 10, 10, [0.9, 0.9, 1.8, 1.8])
+        # Exact: in floating point 0.3 * 3 is 0.8999999999999999; the
+        # cells on either side of the edges only touch the rect.
+        F = czi.Fraction
+        cells = czi.cells_in_rect((F("0.3") * 10, 0, 0, F("0.3") * 10, 0, 0), 10, 10, [F("0.9"), F("0.9"), F("1.8"), F("1.8")])
         self.assertEqual(sorted({x for x, _ in cells}), [3, 4, 5])
         self.assertEqual(sorted({y for _, y in cells}), [4, 5, 6])
-        # A thousandth of a point inside is inside.
-        cells = czi.cells_in_rect((3, 0, 0, 3, 0, 0), 10, 10, [0.899, 0.9, 1.801, 1.8])
+        # A ten-millionth of a point inside is inside.
+        cells = czi.cells_in_rect((3, 0, 0, 3, 0, 0), 10, 10, [F("0.8999999"), F("0.9"), F("1.8000001"), F("1.8")])
         self.assertEqual(sorted({x for x, _ in cells}), [2, 3, 4, 5, 6])
 
     def test_rotated_or_sheared_is_unhandled(self):
@@ -136,7 +137,7 @@ class Check(unittest.TestCase):
         for y in range(10, 15):
             zero[y * 60 + 15:y * 60 + 30] = bytes(15)
         objs = {4: (b"<< >>", b"q /F Do Q"), 5: (rgb, bytes(zero)), 6: (form, b"q 1 0 0 1 0 0 cm /I Do Q")}
-        self.assertEqual(self.verdict(objs, resources=b"/XObject << /F 6 0 R >>")[0], "zero")
+        self.assertEqual(self.verdict(objs, resources=b"/XObject << /F 6 0 R >>")[0][:5], "zero:")
         zero[10 * 60 + 29] = 1  # the blue of the last cell
         objs[5] = (rgb, bytes(zero))
         v, _ = self.verdict(objs, resources=b"/XObject << /F 6 0 R >>")
@@ -153,9 +154,9 @@ class Check(unittest.TestCase):
         im = b"<< /Type /XObject /Subtype /Image /Width 24 /Height 20 /ImageMask true >>"
         inv = b"<< /Type /XObject /Subtype /Image /Width 24 /Height 20 /ImageMask true /Decode [1 0] >>"
         c = {4: (b"<< >>", b"0 0 1 rg " + FULL)}
-        self.assertEqual(self.verdict({**c, 5: (im, mask(0, 1))})[0], "zero")
+        self.assertEqual(self.verdict({**c, 5: (im, mask(0, 1))})[0][:5], "zero:")
         self.assertTrue(self.verdict({**c, 5: (im, mask(0, 0))})[0].startswith("residue:30"))
-        self.assertEqual(self.verdict({**c, 5: (inv, mask(1, 0))})[0], "zero")
+        self.assertEqual(self.verdict({**c, 5: (inv, mask(1, 0))})[0][:5], "zero:")
         self.assertTrue(self.verdict({**c, 5: (inv, mask(1, 1))})[0].startswith("residue:30"))
         odd = b"<< /Type /XObject /Subtype /Image /Width 24 /Height 20 /ImageMask true /Decode [0 0] >>"
         self.assertEqual(self.verdict({**c, 5: (odd, mask(0, 1))})[0], "unhandled:image mask /Decode")
@@ -173,8 +174,10 @@ class Check(unittest.TestCase):
         objs = {4: (b"<< >>", FULL), 5: (GRAY, gray()),
                 6: (GRAY[:-2] + b" /Filter /FlateDecode >>", zlib.compress(gray(zero=((0, 0), (0, 0)))))}
         res = b"/XObject << /Im0 5 0 R /Old 6 0 R >>"
-        self.assertEqual(self.verdict(objs, resources=res)[0], "residue:1 original image(s) under the rect still carried")
-        self.assertEqual(self.verdict(objs, resources=res, elsewhere=True)[0], "zero")
+        self.assertEqual(self.verdict(objs, resources=res)[0],
+                         "residue:1 original image stream(s) under the rect still carried")
+        # --elsewhere: allowed only when another page draws it, and none does.
+        self.assertTrue(self.verdict(objs, resources=res, elsewhere=True)[0].endswith("drawn by no other page"))
 
     def test_what_it_does_not_follow(self):
         ok = {4: (b"<< >>", FULL), 5: (GRAY, gray())}
@@ -199,6 +202,64 @@ class Check(unittest.TestCase):
             v, _ = self.verdict({**ok, **objs}, **kw)
             self.assertTrue(v.startswith("unhandled:") and why in v, (why, v))
 
+    def test_a_named_colour_space_called_like_an_abbreviation(self):
+        # /G is a resource name here (DeviceRGB), not DeviceGray: three
+        # components a sample.
+        rgb = b"<< /Type /XObject /Subtype /Image /Width 20 /Height 20 /ColorSpace /G /BitsPerComponent 8 >>"
+        res = b"/XObject << /Im0 5 0 R >> /ColorSpace << /G /DeviceRGB >>"
+        data = bytearray(b"\x80" * 1200)
+        for y in range(10, 15):
+            data[y * 60 + 15:y * 60 + 30] = bytes(15)
+        self.assertEqual(self.verdict({4: (b"<< >>", FULL), 5: (rgb, bytes(data))}, resources=res)[0], "zero:25")
+        data[14 * 60 + 29] = 1
+        v, _ = self.verdict({4: (b"<< >>", FULL), 5: (rgb, bytes(data))}, resources=res)
+        self.assertTrue(v.startswith("residue:1 sample(s)"), v)
+
+    def test_more_that_it_does_not_follow(self):
+        ok = {4: (b"<< >>", FULL), 5: (GRAY, gray())}
+        cases = [
+            ("a graphics-state font", {6: (b"<< /Font [7 0 R 12] >>", None),
+                                       7: (b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>", None)},
+             {"resources": b"/XObject << /Im0 5 0 R >> /ExtGState << /G0 6 0 R >>"}),
+            ("a Type 3 font", {6: (b"<< /Type /Font /Subtype 7 0 R >>", None), 7: (b"/Type3", None)},
+             {"resources": b"/XObject << /Im0 5 0 R >> /Font << /F0 6 0 R >>"}),
+            ("an image with /Alternates", {5: (GRAY[:-2] + b" /Alternates [] >>", gray())}, {}),
+            ("a form without its own resources",
+             {4: (b"<< >>", b"/Fm Do"), 6: (b"<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] >>", FULL)},
+             {"resources": b"/XObject << /Im0 5 0 R /Fm 6 0 R >>"}),
+        ]
+        for why, objs, kw in cases:
+            v, _ = self.verdict({**ok, **objs}, **kw)
+            self.assertTrue(v.startswith("unhandled:") and why in v, (why, v))
+
+    def test_a_cell_edge_on_the_rect_edge_in_a_file(self):
+        # 1275 columns over 612 pt: column 425 starts at 204 exactly, the
+        # rect's right edge; it is left as it was and does not count.
+        w = 1275
+        d = b"<< /Type /XObject /Subtype /Image /Width 1275 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 >>"
+        row = bytearray(b"\x80" * w)
+        row[0:425] = bytes(425)
+        c = b"q 612 0 0 200 0 0 cm /Im0 Do Q"
+        v, n = self.verdict({4: (b"<< >>", c), 5: (d, bytes(row))}, rect=[0, 50, 204, 100])
+        self.assertEqual((v, n), ("zero:425", 425))
+        v, _ = self.verdict({4: (b"<< >>", c), 5: (d, bytes(row))}, rect=[0, 50, 204.001, 100])
+        self.assertTrue(v.startswith("residue:1 sample(s)"), v)
+
+    def test_an_original_drawn_by_another_page(self):
+        objs = {2: (b"<< /Type /Pages /Kids [3 0 R 7 0 R] /Count 2 >>", None),
+                4: (b"<< >>", FULL), 5: (GRAY, gray()),
+                6: (GRAY[:-2] + b" /Filter /FlateDecode >>", zlib.compress(gray(zero=((0, 0), (0, 0))))),
+                7: (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+                    b"/Resources << /XObject << /Old 6 0 R >> >> /Contents 8 0 R >>", None),
+                8: (b"<< >>", b"q 200 0 0 200 0 0 cm /Old Do Q")}
+        self.assertTrue(self.verdict(objs)[0].startswith("residue:1 original"))
+        self.assertEqual(self.verdict(objs, elsewhere=True)[0], "zero:25")
+
+    def test_a_rect_not_ordered_or_not_finite(self):
+        for rect in ([100, 50, 50, 100], [50, 50, float("inf"), 100], [50, 50, float("nan"), 100]):
+            self.assertTrue(self.verdict({4: (b"<< >>", FULL), 5: (GRAY, gray())}, rect=rect)[0]
+                            .startswith("unhandled:rect"), rect)
+
     def test_a_repaired_output_is_unhandled(self):
         bad = os.path.join(self.d, "bad.pdf")
         write_pdf(bad, {4: (b"<< >>", FULL), 5: (GRAY, gray())})
@@ -210,7 +271,7 @@ class Check(unittest.TestCase):
 
     def test_no_image_under_the_rect_checks_nothing(self):
         v, n = self.verdict({4: (b"<< >>", b"q 40 0 0 40 0 0 cm /Im0 Do Q"), 5: (GRAY, gray())})
-        self.assertEqual((v, n), ("zero", 0))
+        self.assertEqual((v, n), ("no-samples", 0))
 
 
 if __name__ == "__main__":
