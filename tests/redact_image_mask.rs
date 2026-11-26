@@ -307,13 +307,24 @@ fn rows_with_padding_bits() {
     );
     let pdf = page(&format!("0 g {DRAW}"), m, vec![]);
     let r = run(&pdf, RIGHT).unwrap();
+    // Painting samples (0 bits) in columns 6..13 only; padding not counted.
+    let painted: u64 = data
+        .chunks(2)
+        .map(|r| {
+            (6..13)
+                .filter(|x| (u16::from_be_bytes([r[0], r[1]]) >> (15 - x)) & 1 == 0)
+                .count() as u64
+        })
+        .sum();
+    assert_eq!(r.pixels_changed, painted);
     let out = images(&r.output);
     assert_eq!(out.len(), 1);
     for y in 0..13usize {
         let (a, b) = (out[0][2 * y], out[0][2 * y + 1]);
         // Columns 0..6 (page x < 100) kept; 7..13 set to 1; padding kept.
         assert_eq!(a & 0b1111_1100, data[2 * y] & 0b1111_1100, "row {y}");
-        assert_eq!(a & 0b0000_0001, 1, "row {y}");
+        // Column 6 straddles page x 100 (96.2..103.8): edited too.
+        assert_eq!(a & 0b0000_0011, 0b11, "row {y}");
         assert_eq!(b & 0b1111_1000, 0b1111_1000, "row {y}");
         assert_eq!(
             b & 0b0000_0111,
