@@ -480,9 +480,20 @@ class ReviewedDifferences(unittest.TestCase):
     def test_the_committed_differences_are_complete(self):
         entries = cr.load_reviewed()
         # Each of the two reviewed differences, in the Linux and the macOS
-        # reference environment (each platform's own baseline).
-        self.assertEqual(len(entries), 4)
-        self.assertEqual(len({(e["id"], e["metric"], e["env"]["os"]) for e in entries}), 4)
+        # reference environments (each platform's own baseline; macOS 26
+        # and 27).
+        self.assertEqual(len(entries), 6)
+        self.assertEqual(len({(e["id"], e["metric"], e["env"]["os"]) for e in entries}), 6)
+        # The macOS 27 entries are the macOS 26 ones but the OS: the same
+        # input, page, measure, environment otherwise and values.
+        def key(e, os_):
+            env = {k: v for k, v in e["env"].items() if k != "os"}
+            return (e["id"], e["sha256"], e["page"], e["metric"], json.dumps(env, sort_keys=True),
+                    e["baseline"], e["reviewed"], e["review"]) if e["env"]["os"] == os_ else None
+        m26 = {key(e, "macos-26") for e in entries} - {None}
+        m27 = {key(e, "macos-27") for e in entries} - {None}
+        self.assertEqual(len(m26), 2)
+        self.assertEqual(m26, m27)
         for e in entries:
             self.assertEqual([k for k in cr.REVIEWED_FIELDS if e.get(k) in (None, "", {})], [], e["id"])
             self.assertIn(e["metric"], cr.REVIEWED_METRICS)

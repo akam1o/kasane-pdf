@@ -525,12 +525,37 @@ def platform_key():
     return f"{_p.system().lower()}-{m.replace('aarch64', 'arm64') if _p.system() == 'Darwin' else m}"
 
 
+def os_release_key():
+    """macos<major> on macOS (macos27), else None: a platform baseline
+    may be measured per macOS release, the OS being part of its
+    environment."""
+    import platform as _p
+    mac = _p.mac_ver()[0]
+    return f"macos{mac.split('.')[0]}" if _p.system() == "Darwin" and mac else None
+
+
+def platform_baseline(src, cfg):
+    """This machine's platform baseline: the one of its OS release
+    (corpus-full-darwin-arm64-macos27.json) when there is one, else the
+    platform's (corpus-full-darwin-arm64.json). Never another release's:
+    the generic one records its own OS, which --require-same-env compares
+    (a mismatch fails, it is not passed over). None without either."""
+    plat = platform_key()
+    rel = os_release_key()
+    names = ([f"{plat}-{rel}"] if rel else []) + [plat]
+    for name in names:
+        base = Path(src) / cfg["platform_baseline"].format(platform=name)
+        if base.is_file():
+            return base
+    return None
+
+
 def strict_reference(r, cfg, work):
     """The isolated reference E2 (scripts/courier-reference/setup-e2.py),
     built and checked, for the strict comparison with this platform's
     baseline; None when the commit has no baseline for this platform."""
-    base = Path(r.src) / cfg["platform_baseline"].format(platform=platform_key())
-    if not base.is_file():
+    base = platform_baseline(r.src, cfg)
+    if base is None:
         return None, None
     if not shutil.which("mutool"):
         raise CheckFailed("error", "tool_missing")
