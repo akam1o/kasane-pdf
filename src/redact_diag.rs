@@ -3679,6 +3679,21 @@ impl<'a> DiagWalker<'a> {
             })?;
         } else {
             let hits = self.visible_hits(&bounds);
+            // Redaction: an image mask meeting a rect has its samples
+            // there made to paint nothing; painting with a pattern, the
+            // pattern's content inside would only be hidden (as a path
+            // cut in a pattern).
+            if self.redaction_mode
+                && !hits.is_empty()
+                && image_mask(self.doc, dict)
+                && (self.gs.tiling[0].is_some() || self.gs.shading_pat[0].is_some())
+            {
+                self.push_blocker(Blocker {
+                    site: Some(self.site()),
+                    what: "image mask".into(),
+                    detail: "painted with a pattern, it meets a rect".into(),
+                })?;
+            }
             self.bump_reported()?;
             self.targets.push(Target {
                 kind: TargetKind::Image,

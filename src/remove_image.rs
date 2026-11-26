@@ -757,6 +757,10 @@ pub(crate) fn validate_image(
             if key == b"ImageMask" && v.as_bool() == Some(false) {
                 continue;
             }
+            // A stencil mask: checked below.
+            if key == b"ImageMask" && redaction && v.as_bool() == Some(true) {
+                continue;
+            }
             if key == b"Interpolate" && v.as_bool() == Some(false) {
                 continue;
             }
@@ -778,10 +782,63 @@ pub(crate) fn validate_image(
         }
     }
 
-    let bpc = dict
-        .get(b"BitsPerComponent".as_slice())
-        .and_then(|o| o.as_i64())
-        .ok_or_else(|| Error::Structure("image has no /BitsPerComponent".into()))?;
+    // Redaction: an image XObject with an inline-image abbreviation
+    // (Table 93) is refused — readers fall back to it, pdf.js even reads
+    // `/D` before `/Decode`, so it may change how the input or the
+    // edited copy is read.
+    if redaction {
+        for k in [
+            b"BPC".as_slice(),
+            b"CS",
+            b"D",
+            b"DP",
+            b"F",
+            b"H",
+            b"IM",
+            b"I",
+            b"W",
+        ] {
+            if dict.contains_key(k) {
+                return Err(Error::Unsupported {
+                    feature: "image attribute",
+                    detail: format!(
+                        "/{} (an inline-image abbreviation) on an image XObject",
+                        String::from_utf8_lossy(k)
+                    ),
+                });
+            }
+        }
+    }
+    // Redaction edits a stencil mask (§8.9.6.2) too: one bit per
+    // sample, no colour space; its samples inside the rects are set to
+    // the value that paints nothing (`stencil_unpainted`).
+    let stencil = redaction && stencil_unpainted(doc, dict)?.is_some();
+    if stencil {
+        if dict.contains_key(b"ColorSpace".as_slice()) || dict.contains_key(b"SMask".as_slice()) {
+            return Err(Error::Unsupported {
+                feature: "image attribute",
+                detail:
+                    "an image mask with /ColorSpace or /SMask is not supported for image removal"
+                        .into(),
+            });
+        }
+        if dict
+            .get(b"BitsPerComponent".as_slice())
+            .is_some_and(|b| b.as_i64() != Some(1))
+        {
+            return Err(Error::Unsupported {
+                feature: "image BitsPerComponent",
+                detail: "an image mask has 1 bit per sample".into(),
+            });
+        }
+    }
+    let bpc = if stencil {
+        1
+    } else {
+        dict.get(b"BitsPerComponent".as_slice())
+            .and_then(|o| o.as_i64())
+            .ok_or_else(|| Error::Structure("image has no /BitsPerComponent".into()))?
+    };
     // Redaction also edits packed 1, 2 and 4-bit samples (written back
     // raw at the same depth).
     if bpc != 8 && !(redaction && matches!(bpc, 1 | 2 | 4)) {
@@ -793,10 +850,13 @@ pub(crate) fn validate_image(
             ),
         });
     }
-    let cs_obj = dict
-        .get(b"ColorSpace".as_slice())
-        .ok_or_else(|| Error::Structure("image has no /ColorSpace".into()))?;
+    let cs_obj = match dict.get(b"ColorSpace".as_slice()) {
+        Some(c) => c,
+        None if stencil => &Object::Null,
+        None => return Err(Error::Structure("image has no /ColorSpace".into())),
+    };
     let ncomps = match cs_obj {
+        _ if stencil => 1,
         Object::Name(n) => {
             // Resolve the name through the page's /Resources
             // /ColorSpace dict. Two steps are distinguished:
@@ -895,7 +955,7 @@ pub(crate) fn validate_image(
     // convention); decoding and writing it back raw is not exact.
     // Nor a JPEG whose samples are palette indices: a decoder's
     // rounding by one changes an index — any colour — outside the rects.
-    let indexed = image_space_is_indexed(doc, resources, cs_obj)?;
+    let indexed = !stencil && image_space_is_indexed(doc, resources, cs_obj)?;
     if (ncomps == 4 || indexed) && filters.iter().any(|f| f == b"DCTDecode" || f == b"DCT") {
         return Err(Error::Unsupported {
             feature: "image stream filter",
@@ -975,13 +1035,72 @@ fn has_jbig2_globals(dict: &Dict, n: usize) -> bool {
         .is_some_and(|p| p.contains_key(b"JBIG2Globals".as_slice()))
 }
 
-/// The bits per component of an image dictionary (8 when absent: an
-/// image mask, or JPX, which redaction refuses earlier).
+/// The bits per component of an image dictionary: 1 for an image mask
+/// (`/ImageMask true`, which may omit it), else 8 when absent (JPX,
+/// which redaction refuses earlier).
 pub(crate) fn image_bpc(dict: &Dict) -> u32 {
+    if dict.get(b"ImageMask".as_slice()).and_then(|b| b.as_bool()) == Some(true) {
+        return 1;
+    }
     dict.get(b"BitsPerComponent".as_slice())
         .and_then(|o| o.as_i64())
         .filter(|b| matches!(b, 1 | 2 | 4 | 8 | 16))
         .map_or(8, |b| b as u32)
+}
+
+/// An image mask (`/ImageMask true`, §8.9.6.2): the sample value that
+/// paints nothing — 1 with the default `/Decode [0 1]` (0 paints), 0
+/// with `/Decode [1 0]` (1 paints). `None`: not an image mask. A
+/// `/ImageMask` or `/Decode` that is not a direct boolean or a direct
+/// array of exactly one of those two pairs refuses: which value paints
+/// would not be known.
+pub(crate) fn stencil_unpainted(doc: &Document, dict: &Dict) -> Result<Option<u8>, Error> {
+    let refuse = |detail: &str| Error::Unsupported {
+        feature: "image mask",
+        detail: detail.into(),
+    };
+    match dict.get(b"ImageMask".as_slice()) {
+        None | Some(Object::Bool(false)) => return Ok(None),
+        Some(Object::Bool(true)) => {}
+        Some(o) => {
+            return match doc.deref(o) {
+                Ok(Object::Bool(false)) => Ok(None),
+                _ => Err(refuse("/ImageMask is not a direct boolean")),
+            }
+        }
+    }
+    match dict.get(b"Decode".as_slice()) {
+        None => Ok(Some(1)),
+        Some(Object::Array(a)) if a.len() == 2 => match (a[0].as_number(), a[1].as_number()) {
+            (Some(x), Some(y)) if x == 0.0 && y == 1.0 => Ok(Some(1)),
+            (Some(x), Some(y)) if x == 1.0 && y == 0.0 => Ok(Some(0)),
+            _ => Err(refuse("/Decode is neither [0 1] nor [1 0]")),
+        },
+        Some(_) => Err(refuse("/Decode is not a direct array of two numbers")),
+    }
+}
+
+/// Set the samples of an image mask (1 bit each) in `ranges` to
+/// `unpainted`; the number of samples changed (painted ones made
+/// blank).
+pub(crate) fn blank_stencil(
+    data: &mut [u8],
+    w: u32,
+    unpainted: u8,
+    ranges: &[(u32, u32, u32, u32)],
+) -> u64 {
+    if unpainted == 0 {
+        return zero_samples(data, w, 1, 1, ranges);
+    }
+    // Set to 1: zero the complement.
+    for b in data.iter_mut() {
+        *b = !*b;
+    }
+    let changed = zero_samples(data, w, 1, 1, ranges);
+    for b in data.iter_mut() {
+        *b = !*b;
+    }
+    changed
 }
 
 /// The byte length of `w × h` samples of `ncomps` components at `bpc`

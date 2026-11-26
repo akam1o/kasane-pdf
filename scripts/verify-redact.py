@@ -239,6 +239,25 @@ CASES += [
         9: stream(b"/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceGray "
                   b"/BitsPerComponent 8", MASK, flate=True)})), ["--rect", "40", "40", "160", "160"], "ok"),
 ]
+# An image mask (stencil): bits that occur nowhere else; redacted inside
+# the rect, the bits there set to paint nothing, the original not carried.
+MASKBITS = bytes((0x5A ^ (i * 29)) & 0xFF for i in range(16 * 2))
+CASES += [
+    ("image-mask", build(page(TEXT + b" 0 g q 100 0 0 100 50 50 cm /M Do Q",
+                              res=b"/Font << /F1 5 0 R >> /XObject << /M 8 0 R >>", more={
+        8: stream(b"/Type /XObject /Subtype /Image /Width 16 /Height 16 /ImageMask true", MASKBITS,
+                  flate=True)})), ["--rect", "40", "40", "160", "160"], "ok"),
+    ("image-mask-inverted", build(page(TEXT + b" 1 0 0 rg q 100 0 0 100 50 50 cm /M Do Q",
+                                       res=b"/Font << /F1 5 0 R >> /XObject << /M 8 0 R >>", more={
+        8: stream(b"/Type /XObject /Subtype /Image /Width 13 /Height 16 /ImageMask true /Decode [1 0]",
+                  bytes(b ^ 0xFF for b in MASKBITS), flate=True)})), ["--rect", "40", "40", "160", "160"], "ok"),
+    ("image-mask-pattern", build(page(TEXT + b" /Pattern cs /P scn q 100 0 0 100 50 50 cm /M Do Q",
+                                      res=b"/Font << /F1 5 0 R >> /XObject << /M 8 0 R >> /Pattern << /P 9 0 R >>",
+                                      more={
+        8: stream(b"/Type /XObject /Subtype /Image /Width 16 /Height 16 /ImageMask true", MASKBITS),
+        9: stream(b"/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] "
+                  b"/XStep 10 /YStep 10 /Resources << >>", b"0 0 5 5 re f")})), [], "refused"),
+]
 STRUCTURE_KEEPS = {"structure-partial": [b"PUBLICALT"], "structure-nested-shared": [b"PUBLICALT"],
                    "structure-tagged-link": [b"PUBLICALT"], "structure-form-mcr": [b"PUBLICALT"]}
 
@@ -285,7 +304,7 @@ def rects_custom(args):
     return "--rect" in args
 
 
-def ink_inside(pdf, tmp):
+def ink_inside(pdf, tmp, rect=None):
     """Non-white pixels Poppler draws strictly inside RECT (72 dpi, a
     one-pixel margin for anti-aliasing at the edges)."""
     base = os.path.join(tmp, "render")
@@ -294,7 +313,7 @@ def ink_inside(pdf, tmp):
     parts = data.split(maxsplit=4)
     w, h = int(parts[1]), int(parts[2])
     pix = parts[4]
-    llx, lly, urx, ury = (float(v) for v in RECT)
+    llx, lly, urx, ury = (float(v) for v in (rect or RECT))
     count = 0
     for y in range(int(h - ury) + 1, int(h - lly) - 1):
         for x in range(int(llx) + 1, int(urx) - 1):
@@ -345,6 +364,14 @@ def run():
                     problems.append("secret text bytes present after full decode")
                 if SAMPLES[:96] in data and name not in ORIGINAL_STAYS:
                     problems.append("original image samples present after full decode")
+                if name == "image-mask" and MASKBITS in data:
+                    problems.append("original image mask bits present after full decode")
+                if name.startswith("image-mask"):
+                    # A mask paints only where its samples say so: nothing
+                    # inside the rect (Poppler), the mask wholly inside it.
+                    ink = ink_inside(out, tmp, ("40", "40", "160", "160"))
+                    if ink:
+                        problems.append(f"{ink} non-white pixels inside the rect (Poppler render)")
                 if name == "image-soft-mask" and MASK[:64] in data:
                     problems.append("original soft mask samples present after full decode")
                 if "image" not in name and not rects_custom(args):

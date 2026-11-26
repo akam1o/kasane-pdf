@@ -2419,8 +2419,20 @@ pub(crate) fn regions_edit_session_with<'a>(
             }
             let digests = (mode == SessionMode::Redact).then(|| [sha256(&decoded), sha256(raw)]);
             let mut new_data = decoded;
-            let changed_here =
-                crate::remove_image::zero_samples(&mut new_data, width, ncomps, bpc, &ranges);
+            // An image mask paints with the colour in force: its samples
+            // inside the rects are made to paint nothing.
+            let stencil = match mode {
+                SessionMode::Redact => crate::remove_image::stencil_unpainted(doc, dict)?,
+                _ => None,
+            };
+            let changed_here = match stencil {
+                Some(unpainted) => {
+                    crate::remove_image::blank_stencil(&mut new_data, width, unpainted, &ranges)
+                }
+                None => {
+                    crate::remove_image::zero_samples(&mut new_data, width, ncomps, bpc, &ranges)
+                }
+            };
             // Redaction: a soft mask holds the shape of what is drawn —
             // its samples inside the rects go too (made opaque), even
             // where the colour samples were already black.
@@ -2487,7 +2499,9 @@ pub(crate) fn regions_edit_session_with<'a>(
                         scope_res.as_ref(),
                         dict.get(b"ColorSpace".as_slice()).unwrap_or(&Object::Null),
                     )?;
-                if !indexed_default && !is_default_decode(d, ncomps) {
+                // An image mask's `/Decode` ([0 1] or [1 0]) was read by
+                // `stencil_unpainted` and is kept: it says which value paints.
+                if stencil.is_none() && !indexed_default && !is_default_decode(d, ncomps) {
                     return Err(Error::Unsupported {
                         feature: "image with non-default /Decode",
                         detail: "inverted or remapped samples are not rewritten".into(),
