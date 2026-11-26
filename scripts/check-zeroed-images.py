@@ -66,6 +66,7 @@ value); `no-samples` (no image sample meets the rect: nothing to settle);
 `residue:<what>`; `unhandled:<why>`. Exit 0 only for `zero`. Only `zero`
 settles the false signal.
 """
+import base64
 import hashlib
 import json
 import math
@@ -89,17 +90,27 @@ class Residue(Exception):
 
 def qpdf_json(pdf, tmp, tag, level="specialized"):
     try:
-        # JSON on stdout (qpdf 11 does not take an output file with --json).
-        r = subprocess.run(["qpdf", "--json=2", "--json-stream-data=file",
-                            "--json-stream-prefix=" + os.path.join(tmp, f"{tag}-{level}"),
-                            f"--decode-level={level}", pdf], capture_output=True, timeout=TIMEOUT)
+        # Stream data inline, on stdout: qpdf writes no file (Ubuntu's qpdf
+        # may not open files of its own in the temporary directory, nor
+        # take an output file with --json). Each stream's data is then
+        # kept in a file of its own here.
+        r = subprocess.run(["qpdf", "--json=2", "--json-stream-data=inline", f"--decode-level={level}", pdf],
+                           capture_output=True, timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         raise Unhandled(f"qpdf timed out on the {tag}")
     if r.returncode != 0:
         why = r.stderr.decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
         raise Unhandled(f"qpdf exit {r.returncode} on the {tag} (repaired or unreadable): {why[0][-200:]}")
     # Exact numbers: a real as the decimal qpdf writes.
-    return json.loads(r.stdout, parse_float=Fraction)
+    j = json.loads(r.stdout, parse_float=Fraction)
+    for i, o in enumerate(j["qpdf"][1].values()):
+        st = o.get("stream") if isinstance(o, dict) else None
+        if st is not None and "data" in st:
+            f = os.path.join(tmp, f"{tag}-{level}-{i}")
+            with open(f, "wb") as fh:
+                fh.write(base64.b64decode(st.pop("data"), validate=True))
+            st["datafile"] = f
+    return j
 
 
 class Doc:
