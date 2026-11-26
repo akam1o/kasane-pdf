@@ -678,6 +678,29 @@ class StrictPlatform(unittest.TestCase):
             self.assertEqual(e.exception.status, "failed", kw)
 
 
+    def test_the_baseline_of_this_os_release(self):
+        # One for this macOS release is preferred; another release's is
+        # never used; the generic one otherwise.
+        r, src, work = self.runner()
+        base = src / "compat" / "baselines"
+        real = rv.os_release_key
+        self.addCleanup(setattr, rv, "os_release_key", real)
+        rv.os_release_key = lambda: "macos27"
+        (base / f"corpus-full-{rv.platform_key()}-macos26.json").write_text("{}")
+        self.assertIsNone(rv.platform_baseline(src, {"platform_baseline": "compat/baselines/corpus-full-{platform}.json"}))
+        (base / f"corpus-full-{rv.platform_key()}.json").write_text("{}")
+        cfg = {"platform_baseline": "compat/baselines/corpus-full-{platform}.json"}
+        self.assertEqual(rv.platform_baseline(src, cfg).name, f"corpus-full-{rv.platform_key()}.json")
+        (base / f"corpus-full-{rv.platform_key()}-macos27.json").write_text("{}")
+        self.assertEqual(rv.platform_baseline(src, cfg).name, f"corpus-full-{rv.platform_key()}-macos27.json")
+        s = self.check(r, work)
+        strict = next(c for c, _ in r.ran if "--require-same-env" in c)
+        self.assertIn(f"corpus-full-{rv.platform_key()}-macos27.json", strict)
+        self.assertEqual(s["strict"], "passed")
+        rv.os_release_key = lambda: None  # Linux: the platform's only
+        self.assertEqual(rv.platform_baseline(src, cfg).name, f"corpus-full-{rv.platform_key()}.json")
+
+
 class ReleaseCheckHistoryCoverage(unittest.TestCase):
     """release-check.py: the tag's history.json covers every published
     version but the release's own (a patch from an older tag)."""

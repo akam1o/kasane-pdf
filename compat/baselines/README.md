@@ -10,6 +10,7 @@ smoke run; nightly: the full corpus).
 | `fixtures-smoke.json` | `kasane-compat run --corpus tests/fixtures --mode smoke --with-poppler` | the 66 deterministic fixtures under `tests/fixtures/` |
 | `corpus-full.json` | the nightly job: runner built with `--features cjk-fallback` on ubuntu-latest, `kasane-compat run --corpus compat/corpus --mode full --with-poppler --dpi 96 --timeout-secs 20`, Poppler's reference E2 | the 511-file real-world corpus (`compat/manifest.yaml`) |
 | `corpus-full-darwin-arm64.json` | the same run on macOS arm64 (Homebrew Poppler and MuPDF) with E2, and the second witness: release-verify's strict comparison on that platform | the same corpus |
+| `corpus-full-darwin-arm64-macos27.json` | the same as `corpus-full-darwin-arm64.json`, measured on macOS 27: release-verify's strict comparison on a macOS 27 machine uses it, the other on any other release | the same corpus |
 
 ## Updating a baseline
 
@@ -31,7 +32,17 @@ product with the E2 harness), identical to its E1 predecessor but the
 environment; `corpus-full-darwin-arm64.json` from the same commit run
 on macOS 26 arm64 (Poppler 26.10.0, MuPDF 1.28.6, E2 built there from the
 same lock), which a second run with E2 in another directory matches
-strictly. Re-measure: dispatch the nightly on such a branch,
+strictly. `corpus-full-darwin-arm64-macos27.json` is that commit
+measured on macOS 27 arm64 (same Poppler, MuPDF, qpdf and E2 lock; E2's
+fingerprint identical): its records of all 511 files and its aggregate
+are the macOS 26 baseline's, its environment differs in `os` only
+(`update-baseline`: "environment change: os, no file changes"). The OS
+is part of a baseline's environment, so `--require-same-env` compares a
+macOS 27 run with the macOS 26 baseline loosely only; `release-verify.py`
+takes the baseline of the running macOS release when there is one
+(`corpus-full-<platform>-macos<major>.json`), else the platform's, which
+then fails the strict comparison on `os` rather than being passed over.
+Re-measure: dispatch the nightly on such a branch,
 then `update-baseline` from its artifacts; on macOS, the steps of
 `release-verify.py`'s strict check run by hand with that commit.
 
