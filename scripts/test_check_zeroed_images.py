@@ -307,6 +307,32 @@ class Check(unittest.TestCase):
         v, _ = czi.check(inp, out, 1, RECT, True)
         self.assertTrue(v.startswith("residue:1 occurrence(s) of an original"), v)
 
+    def test_an_encrypted_output(self):
+        out = self.pdf("plain", {4: (b"<< >>", FULL), 5: (GRAY, gray())})
+        enc = os.path.join(self.d, "enc.pdf")
+        subprocess.run(["qpdf", "--encrypt", "", "owner", "256", "--", out, enc], check=True, capture_output=True)
+        self.assertEqual(czi.check(self.inp, enc, 1, RECT)[0], "unhandled:an encrypted output")
+
+    def test_elsewhere_credits_only_the_mask_in_use(self):
+        # Page 2 draws an image whose /SMask overrides its /Mask; the
+        # original is a copy of that /Mask, so no page uses it.
+        orig = gray(zero=((0, 0), (0, 0)))
+        inp = self.pdf("in-raw3", {4: (b"<< >>", FULL), 5: (GRAY, orig)})
+        sm = b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 >>"
+        objs = {2: (b"<< /Type /Pages /Kids [3 0 R 7 0 R] /Count 2 >>", None),
+                4: (b"<< >>", FULL), 5: (GRAY, gray()), 6: (GRAY, orig),
+                7: (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+                    b"/Resources << /XObject << /P 9 0 R >> >> /Contents 8 0 R >>", None),
+                8: (b"<< >>", b"q 200 0 0 200 0 0 cm /P Do Q"),
+                9: (GRAY[:-2] + b" /SMask 10 0 R /Mask 6 0 R >>", gray()), 10: (sm, b"\xff")}
+        out = os.path.join(self.d, "mask.pdf")
+        write_pdf(out, objs)
+        self.assertTrue(czi.check(inp, out, 1, RECT, True)[0].startswith("residue:"))
+        del objs[10]
+        objs[9] = (GRAY[:-2] + b" /Mask 6 0 R >>", gray())
+        write_pdf(out, objs)
+        self.assertEqual(czi.check(inp, out, 1, RECT, True)[0], "zero:25")
+
     def test_an_input_image_with_alternates(self):
         inp = self.pdf("in-alt", {4: (b"<< >>", FULL), 5: (GRAY[:-2] + b" /Alternates [] >>", gray(zero=((0, 0), (0, 0)))),})
         v, _ = self.verdict({4: (b"<< >>", FULL), 5: (GRAY, gray())}, inp=inp)

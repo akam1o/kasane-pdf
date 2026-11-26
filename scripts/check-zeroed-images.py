@@ -50,7 +50,10 @@ Method (the rect in default user space of PAGE, 1-based):
     revision (one `startxref`: an incremental update keeps earlier
     revisions qpdf's object table does not show; `unhandled`), and every
     occurrence of an original's bytes (32 or more) in its raw bytes must
-    be the stored data of a stream `--elsewhere` allows. An original or
+    be the stored data of a stream `--elsewhere` allows (an image another
+    page draws, or the mask that image uses: its /SMask, else its
+    /Mask). An encrypted output: `unhandled` (qpdf's stored bytes are
+    decrypted, not the file's). An original or
     its mask with external data (/F): `unhandled`. An original with /Alternates or /OPI:
     `unhandled` (its other representations are not inventoried).
     A form with /Ref, a content stream with external data (/F) or a
@@ -551,6 +554,9 @@ def check(inp, out, page_no, rect, elsewhere=False):
         try:
             rect = valid_rect(rect)
             dout = Doc(qpdf_json(out, tmp, "output"))
+            if (dout.j.get("encrypt") or {}).get("encrypted"):
+                # qpdf's stored bytes are decrypted: not the file's bytes.
+                raise Unhandled("an encrypted output")
             if revisions(out) != 1:
                 raise Unhandled("the output is not a single revision (incremental update or no startxref)")
             pref = page_ref(dout, page_no)
@@ -584,7 +590,10 @@ def check(inp, out, page_no, rect, elsewhere=False):
                     if i != page_no:
                         for ref, _, _ in walk(dout, p["object"]):
                             d, _ = dout.stream(ref)
-                            drawn |= {ref} | {x for x in (d.get("/SMask"), d.get("/Mask")) if isinstance(x, str)}
+                            # The mask a reader uses: /SMask overrides /Mask
+                            # (ISO 32000-2 Table 87).
+                            m = d.get("/SMask") if d.get("/SMask") is not None else d.get("/Mask")
+                            drawn |= {ref} | ({m} if isinstance(m, str) else set())
             # The file's bytes too, beyond the object table: every
             # occurrence of an original's bytes (32 or more), overlapping
             # ones included, must be the stored data of a stream allowed
