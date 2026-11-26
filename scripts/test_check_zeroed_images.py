@@ -268,13 +268,44 @@ class Check(unittest.TestCase):
             ("a reference form (/Ref)", {4: (b"<< >>", b"/Fm Do"),
                                          6: (form + b" /Ref << /F (other.pdf) /Page 0 >> >>", FULL)}),
             ("external data (/F)", {4: (b"<< /F (other.bin) >>", FULL)}),
-            ("a content stream filter", {4: (b"<< /Filter /ASCIIHexDecode /DecodeParms << /Bogus 1 >> >>",
+            ("filter qpdf did not remove", {4: (b"<< /Filter /ASCIIHexDecode /DecodeParms << /Bogus 1 >> >>",
                                              b"zz>")}),
         ]
         res = b"/XObject << /Im0 5 0 R /Fm 6 0 R >>"
         for why, objs in cases:
             v, _ = self.verdict({**ok, **objs}, resources=res)
-            self.assertTrue(v.startswith("unhandled:"), (why, v))
+            self.assertTrue(v.startswith("unhandled:") and why in v, (why, v))
+            # The same in the input (the output clean).
+            inp = self.pdf("in-x", {**ok, 5: (GRAY, gray(zero=((0, 0), (0, 0)))), **objs}, resources=res)
+            v, _ = self.verdict(ok, inp=inp)
+            self.assertTrue(v.startswith("unhandled:") and why in v, ("input", why, v))
+
+    def test_an_input_image_with_external_data(self):
+        for extra in (b" /F (img.bin) >>", b" /SMask 6 0 R >>"):
+            objs = {4: (b"<< >>", FULL), 5: (GRAY[:-2] + extra, gray(zero=((0, 0), (0, 0))))}
+            if b"SMask" in extra:
+                objs[6] = (b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray "
+                           b"/BitsPerComponent 8 /F (mask.bin) >>", b"\xff")
+            inp = self.pdf("in-f", objs)
+            v, _ = self.verdict({4: (b"<< >>", FULL), 5: (GRAY, gray())}, inp=inp)
+            self.assertEqual(v, "unhandled:an input image or mask with external data (/F)", extra)
+
+    def test_elsewhere_does_not_cover_another_occurrence(self):
+        # Page 2 draws an exact (uncompressed) copy of the original: allowed
+        # with --elsewhere; the same bytes once more in a comment are not.
+        orig = gray(zero=((0, 0), (0, 0)))
+        inp = self.pdf("in-raw2", {4: (b"<< >>", FULL), 5: (GRAY, orig)})
+        objs = {2: (b"<< /Type /Pages /Kids [3 0 R 7 0 R] /Count 2 >>", None),
+                4: (b"<< >>", FULL), 5: (GRAY, gray()), 6: (GRAY, orig),
+                7: (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+                    b"/Resources << /XObject << /Old 6 0 R >> >> /Contents 8 0 R >>", None),
+                8: (b"<< >>", b"q 200 0 0 200 0 0 cm /Old Do Q")}
+        out = os.path.join(self.d, "two.pdf")
+        write_pdf(out, objs)
+        self.assertEqual(czi.check(inp, out, 1, RECT, True)[0], "zero:25")
+        write_pdf(out, objs, header=b"%" + orig + b"\n")
+        v, _ = czi.check(inp, out, 1, RECT, True)
+        self.assertTrue(v.startswith("residue:1 occurrence(s) of an original"), v)
 
     def test_an_input_image_with_alternates(self):
         inp = self.pdf("in-alt", {4: (b"<< >>", FULL), 5: (GRAY[:-2] + b" /Alternates [] >>", gray(zero=((0, 0), (0, 0)))),})
@@ -301,7 +332,7 @@ class Check(unittest.TestCase):
         out = os.path.join(self.d, "loose.pdf")
         write_pdf(out, {4: (b"<< >>", FULL), 5: (GRAY, gray())}, header=b"%" + gray(zero=((0, 0), (0, 0))) + b"\n")
         v, _ = czi.check(inp, out, 1, RECT)
-        self.assertEqual(v, "residue:1 original image stream(s) in the output's bytes outside its objects")
+        self.assertTrue(v.startswith("residue:1 occurrence(s) of an original"), v)
         write_pdf(out, {4: (b"<< >>", FULL), 5: (GRAY, gray())})
         self.assertEqual(czi.check(inp, out, 1, RECT)[0], "zero:25")
 

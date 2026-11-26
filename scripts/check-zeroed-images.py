@@ -48,9 +48,10 @@ Method (the rect in default user space of PAGE, 1-based):
     re-encoded differently is not detected by this step: the guarantee
     of step 3 is about what the page draws. The output must be a single
     revision (one `startxref`: an incremental update keeps earlier
-    revisions qpdf's object table does not show; `unhandled`), and its
-    raw bytes may not contain an original's bytes (32 or more) outside
-    the objects judged above. An original with /Alternates or /OPI:
+    revisions qpdf's object table does not show; `unhandled`), and every
+    occurrence of an original's bytes (32 or more) in its raw bytes must
+    be the stored data of a stream `--elsewhere` allows. An original or
+    its mask with external data (/F): `unhandled`. An original with /Alternates or /OPI:
     `unhandled` (its other representations are not inventoried).
     A form with /Ref, a content stream with external data (/F) or a
     filter qpdf left: `unhandled`, on either file.
@@ -563,31 +564,54 @@ def check(inp, out, page_no, rect, elsewhere=False):
             din_raw = Doc(qpdf_json(inp, tmp, "input", "none"))
             refs = {ref for ref, ctm, _ in walk(din, page_ref(din, page_no)) if meets(ctm, rect)}
             for ref in refs:
-                # An original with other representations: not inventoried.
+                # An original with other representations, or whose data
+                # lies outside the file: not inventoried.
                 d, _ = din.stream(ref)
                 for k in ("/Alternates", "/OPI"):
                     if d.get(k) is not None:
                         raise Unhandled(f"an input image with {k}")
+                for x in [ref] + [d.get(k) for k in ("/SMask", "/Mask") if isinstance(d.get(k), str)]:
+                    xd = din.stream(x)[0] or {}
+                    if xd.get("/F") is not None or xd.get("/FFilter") is not None:
+                        raise Unhandled("an input image or mask with external data (/F)")
             orig = originals((din, din_raw), refs)
-            held = stream_digests((dout, Doc(qpdf_json(out, tmp, "output", "none"))))
+            dout_raw = Doc(qpdf_json(out, tmp, "output", "none"))
+            held = stream_digests((dout, dout_raw))
             carried = set().union(*(held[h] for h in orig.keys() & held.keys()))
-            # The file's bytes too, beyond the object table: an original
-            # stored as it was in the input, wherever it lies. (An exact
-            # copy listed in the table is judged below instead.)
-            with open(out, "rb") as fh:
-                whole = fh.read()
-            loose = [h for h, b in orig.items() if h not in held and len(b) >= 32 and b in whole]
-            if loose:
-                raise Residue(f"{len(loose)} original image stream(s) in the output's bytes outside its objects")
-            if carried:
-                if not elsewhere:
-                    raise Residue(f"{len(carried)} original image stream(s) under the rect still carried")
-                drawn = set()
+            drawn = set()
+            if carried and elsewhere:
                 for i, p in enumerate(dout.j["pages"], 1):
                     if i != page_no:
                         for ref, _, _ in walk(dout, p["object"]):
                             d, _ = dout.stream(ref)
                             drawn |= {ref} | {x for x in (d.get("/SMask"), d.get("/Mask")) if isinstance(x, str)}
+            # The file's bytes too, beyond the object table: every
+            # occurrence of an original's bytes (32 or more), overlapping
+            # ones included, must be the stored data of a stream allowed
+            # below (an exact copy another page draws, with --elsewhere);
+            # any other occurrence is a copy.
+            with open(out, "rb") as fh:
+                whole = fh.read()
+            stored = {}
+            for k, o in dout_raw.objs.items():
+                if k.startswith("obj:") and "stream" in o and o["stream"].get("datafile"):
+                    with open(o["stream"]["datafile"], "rb") as fh:
+                        stored.setdefault(fh.read(), set()).add(k[4:])
+            loose = 0
+            for b in orig.values():
+                if len(b) < 32:
+                    continue
+                n, i = 0, whole.find(b)
+                while i >= 0:
+                    n += 1
+                    i = whole.find(b, i + 1)
+                loose += max(0, n - len(stored.get(b, set()) & drawn))
+            if loose:
+                raise Residue(f"{loose} occurrence(s) of an original image stream's bytes in the output "
+                              "not accounted for by a stream another page draws")
+            if carried:
+                if not elsewhere:
+                    raise Residue(f"{len(carried)} original image stream(s) under the rect still carried")
                 if carried - drawn:
                     raise Residue(f"{len(carried - drawn)} original image stream(s) carried, "
                                   "drawn by no other page")
