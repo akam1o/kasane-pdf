@@ -7,6 +7,12 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `redact`: image masks (`/ImageMask true`) meeting a rect are redacted
+  instead of refused: a copy with the samples inside the rects set to
+  the value that paints nothing (per `/Decode` `[0 1]` or `[1 0]`), the
+  rest of the mask and its colour kept. A mask painted with a pattern
+  meeting a rect, or one with `/ColorSpace`, `/SMask`, more than 1 bit a
+  sample or an indirect `/Decode`/`/ImageMask`, is still refused.
 - `redact`: `RedactOptions::with_usage_rights(UsageRightsPolicy::Remove)`
   (CLI `--remove-usage-rights`) redacts a document with a usage-rights
   signature (`/Perms /UR`, `/UR3`) instead of refusing it. The

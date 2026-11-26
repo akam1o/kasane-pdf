@@ -239,6 +239,21 @@ CASES += [
         9: stream(b"/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceGray "
                   b"/BitsPerComponent 8", MASK, flate=True)})), ["--rect", "40", "40", "160", "160"], "ok"),
 ]
+# An image mask (stencil): bits that occur nowhere else; redacted inside
+# the rect, the bits there set to paint nothing, the original not carried.
+MASKBITS = bytes((0x5A ^ (i * 29)) & 0xFF for i in range(16 * 2))
+CASES += [
+    ("image-mask", build(page(TEXT + b" 0 g q 100 0 0 100 50 50 cm /M Do Q",
+                              res=b"/Font << /F1 5 0 R >> /XObject << /M 8 0 R >>", more={
+        8: stream(b"/Type /XObject /Subtype /Image /Width 16 /Height 16 /ImageMask true", MASKBITS,
+                  flate=True)})), ["--rect", "40", "40", "160", "160"], "ok"),
+    ("image-mask-pattern", build(page(TEXT + b" /Pattern cs /P scn q 100 0 0 100 50 50 cm /M Do Q",
+                                      res=b"/Font << /F1 5 0 R >> /XObject << /M 8 0 R >> /Pattern << /P 9 0 R >>",
+                                      more={
+        8: stream(b"/Type /XObject /Subtype /Image /Width 16 /Height 16 /ImageMask true", MASKBITS),
+        9: stream(b"/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] "
+                  b"/XStep 10 /YStep 10 /Resources << >>", b"0 0 5 5 re f")})), [], "refused"),
+]
 STRUCTURE_KEEPS = {"structure-partial": [b"PUBLICALT"], "structure-nested-shared": [b"PUBLICALT"],
                    "structure-tagged-link": [b"PUBLICALT"], "structure-form-mcr": [b"PUBLICALT"]}
 
@@ -345,6 +360,8 @@ def run():
                     problems.append("secret text bytes present after full decode")
                 if SAMPLES[:96] in data and name not in ORIGINAL_STAYS:
                     problems.append("original image samples present after full decode")
+                if name == "image-mask" and MASKBITS in data:
+                    problems.append("original image mask bits present after full decode")
                 if name == "image-soft-mask" and MASK[:64] in data:
                     problems.append("original soft mask samples present after full decode")
                 if "image" not in name and not rects_custom(args):
