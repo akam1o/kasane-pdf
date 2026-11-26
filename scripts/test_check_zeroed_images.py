@@ -344,7 +344,8 @@ class Check(unittest.TestCase):
     def test_an_incremental_update(self):
         # The original kept in the first revision; the second replaces it.
         out = os.path.join(self.d, "rev2.pdf")
-        base = open(self.inp, "rb").read()
+        with open(self.inp, "rb") as fh:
+            base = fh.read()
         tail = b"5 0 obj\n" + GRAY[:-2] + b" /Length 400 >>\nstream\n" + gray() + b"\nendstream\nendobj\n"
         x = len(base) + len(tail)
         tail += b"xref\n5 1\n%010d 00000 n \ntrailer\n<< /Root 1 0 R /Size 6 /Prev %d >>\nstartxref\n%d\n%%%%EOF\n" % (

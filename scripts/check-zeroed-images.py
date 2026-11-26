@@ -88,18 +88,18 @@ class Residue(Exception):
 
 
 def qpdf_json(pdf, tmp, tag, level="specialized"):
-    j = os.path.join(tmp, f"{tag}-{level}.json")
     try:
+        # JSON on stdout (qpdf 11 does not take an output file with --json).
         r = subprocess.run(["qpdf", "--json=2", "--json-stream-data=file",
                             "--json-stream-prefix=" + os.path.join(tmp, f"{tag}-{level}"),
-                            f"--decode-level={level}", pdf, j], capture_output=True, timeout=TIMEOUT)
+                            f"--decode-level={level}", pdf], capture_output=True, timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         raise Unhandled(f"qpdf timed out on the {tag}")
     if r.returncode != 0:
-        raise Unhandled(f"qpdf exit {r.returncode} on the {tag} (repaired or unreadable)")
-    with open(j) as fh:
-        # Exact numbers: a real as the decimal qpdf writes.
-        return json.load(fh, parse_float=Fraction)
+        why = r.stderr.decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
+        raise Unhandled(f"qpdf exit {r.returncode} on the {tag} (repaired or unreadable): {why[0][-200:]}")
+    # Exact numbers: a real as the decimal qpdf writes.
+    return json.loads(r.stdout, parse_float=Fraction)
 
 
 class Doc:
