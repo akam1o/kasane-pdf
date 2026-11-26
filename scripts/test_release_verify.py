@@ -700,6 +700,16 @@ class StrictPlatform(unittest.TestCase):
         rv.os_release_key = lambda: None  # Linux: the platform's only
         self.assertEqual(rv.platform_baseline(src, cfg).name, f"corpus-full-{rv.platform_key()}.json")
 
+    def test_os_release_key(self):
+        import platform
+        real = (platform.system, platform.mac_ver)
+        self.addCleanup(lambda: (setattr(platform, "system", real[0]), setattr(platform, "mac_ver", real[1])))
+        for system, ver, want in (("Darwin", "27.2.1", "macos27"), ("Darwin", "28.0", "macos28"),
+                                  ("Darwin", "", None), ("Linux", "", None)):
+            platform.system = lambda system=system: system
+            platform.mac_ver = lambda ver=ver: (ver, ("", "", ""), "")
+            self.assertEqual(rv.os_release_key(), want, (system, ver))
+
 
 class ReleaseCheckHistoryCoverage(unittest.TestCase):
     """release-check.py: the tag's history.json covers every published
