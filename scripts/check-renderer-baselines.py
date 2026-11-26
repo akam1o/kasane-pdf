@@ -120,7 +120,18 @@ def script_cases():
         "verify_renderers", os.path.join(ROOT, "scripts", "verify-renderers.py"))
     vrend = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(vrend)
-    out = {f"vr:{name}": expect for name, _pdf, _args, expect in vrend.load_verify_redact().CASES}
+    return declared_cases(vrend)
+
+
+def declared_cases(vrend):
+    vr = vrend.load_verify_redact()
+    out = {f"vr:{name}": expect for name, _pdf, _args, expect in vr.CASES}
+    made = {name for name, _pdf, _args in vrend.synthetic_cases(vr)}
+    if made != set(vrend.SYNTHETIC_OUTCOME):
+        # A synthetic case generated without a declared outcome (or the
+        # reverse) would pass here and fail only in the full gate.
+        raise SystemExit("check-renderer-baselines: verify-renderers.py's synthetic cases and "
+                         f"SYNTHETIC_OUTCOME differ: {sorted(made ^ set(vrend.SYNTHETIC_OUTCOME))}")
     out.update(vrend.SYNTHETIC_OUTCOME)
     return out
 

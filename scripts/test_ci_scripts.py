@@ -21,6 +21,7 @@ import sys
 import os
 import subprocess
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -815,6 +816,17 @@ class RendererBaselines(unittest.TestCase):
         self.assertIn("vr:text", got)
         self.assertIn("syn-xfa", got)
         self.assertTrue(set(got.values()) <= {"ok", "refused"})
+
+    def test_a_synthetic_case_without_a_declared_outcome(self):
+        vr = types.SimpleNamespace(CASES=[("text", b"", [], "ok")])
+        for made, declared in (({"syn-a", "syn-b"}, {"syn-a": "ok"}), ({"syn-a"}, {"syn-a": "ok", "syn-b": "ok"})):
+            vrend = types.SimpleNamespace(load_verify_redact=lambda: vr, SYNTHETIC_OUTCOME=declared,
+                                          synthetic_cases=lambda _vr, made=made: [(n, b"", []) for n in made])
+            with self.assertRaises(SystemExit) as e:
+                crb.declared_cases(vrend)
+            self.assertIn("syn-b", str(e.exception))
+        vrend.synthetic_cases = lambda _vr: [("syn-a", b"", []), ("syn-b", b"", [])]
+        self.assertEqual(crb.declared_cases(vrend), {"vr:text": "ok", "syn-a": "ok", "syn-b": "ok"})
 
     def test_1_a_new_input_without_its_entries(self):
         (self.dump / "manifest-a-new.tsv").write_text("a-new.pdf\tGHSA-test\tredact --page 1 --rect 1 1 2 2\tquiet:Q\n")
