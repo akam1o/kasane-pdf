@@ -8,6 +8,7 @@ soft mask, an original carried, and what it does not follow (`unhandled`).
 """
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -25,7 +26,7 @@ GRAY = b"<< /Type /XObject /Subtype /Image /Width 20 /Height 20 /ColorSpace /Dev
 FULL = b"q 200 0 0 200 0 0 cm /Im0 Do Q"
 
 
-def write_pdf(path, objs, page_extra=b"", resources=b"/XObject << /Im0 5 0 R >>"):
+def write_pdf(path, objs, page_extra=b"", resources=b"/XObject << /Im0 5 0 R >>", header=b""):
     """objs: {number >= 4: (dict bytes, stream data or None)}; 1-3 are the
     catalog, the page tree and the page (contents 4 0 R)."""
     base = {1: (b"<< /Type /Catalog /Pages 2 0 R >>", None),
@@ -33,7 +34,7 @@ def write_pdf(path, objs, page_extra=b"", resources=b"/XObject << /Im0 5 0 R >>"
             3: (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << " + resources
                 + b" >> /Contents 4 0 R " + page_extra + b">>", None)}
     base.update(objs)
-    out, offs = b"%PDF-1.7\n", {}
+    out, offs = b"%PDF-1.7\n" + header, {}
     for n in sorted(base):
         body, data = base[n]
         offs[n] = len(out)
@@ -259,6 +260,50 @@ class Check(unittest.TestCase):
         for rect in ([100, 50, 50, 100], [50, 50, float("inf"), 100], [50, 50, float("nan"), 100]):
             self.assertTrue(self.verdict({4: (b"<< >>", FULL), 5: (GRAY, gray())}, rect=rect)[0]
                             .startswith("unhandled:rect"), rect)
+
+    def test_round_two_unhandled(self):
+        ok = {4: (b"<< >>", FULL), 5: (GRAY, gray())}
+        form = b"<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /XObject << /Im0 5 0 R >> >>"
+        cases = [
+            ("a reference form (/Ref)", {4: (b"<< >>", b"/Fm Do"),
+                                         6: (form + b" /Ref << /F (other.pdf) /Page 0 >> >>", FULL)}),
+            ("external data (/F)", {4: (b"<< /F (other.bin) >>", FULL)}),
+            ("a content stream filter", {4: (b"<< /Filter /ASCIIHexDecode /DecodeParms << /Bogus 1 >> >>",
+                                             b"zz>")}),
+        ]
+        res = b"/XObject << /Im0 5 0 R /Fm 6 0 R >>"
+        for why, objs in cases:
+            v, _ = self.verdict({**ok, **objs}, resources=res)
+            self.assertTrue(v.startswith("unhandled:"), (why, v))
+
+    def test_an_input_image_with_alternates(self):
+        inp = self.pdf("in-alt", {4: (b"<< >>", FULL), 5: (GRAY[:-2] + b" /Alternates [] >>", gray(zero=((0, 0), (0, 0)))),})
+        v, _ = self.verdict({4: (b"<< >>", FULL), 5: (GRAY, gray())}, inp=inp)
+        self.assertEqual(v, "unhandled:an input image with /Alternates")
+
+    def test_an_incremental_update(self):
+        # The original kept in the first revision; the second replaces it.
+        out = os.path.join(self.d, "rev2.pdf")
+        base = open(self.inp, "rb").read()
+        tail = b"5 0 obj\n" + GRAY[:-2] + b" /Length 400 >>\nstream\n" + gray() + b"\nendstream\nendobj\n"
+        x = len(base) + len(tail)
+        tail += b"xref\n5 1\n%010d 00000 n \ntrailer\n<< /Root 1 0 R /Size 6 /Prev %d >>\nstartxref\n%d\n%%%%EOF\n" % (
+            len(base), int(re.search(rb"startxref\s+(\d+)", base).group(1)), x)
+        with open(out, "wb") as fh:
+            fh.write(base + tail)
+        v, _ = czi.check(self.inp, out, 1, RECT)
+        self.assertEqual(v, "unhandled:the output is not a single revision (incremental update or no startxref)")
+
+    def test_an_original_in_the_bytes_outside_the_objects(self):
+        # The input's samples stored as they are (0x80, no line ends), then
+        # an output of one revision with those bytes in a comment.
+        inp = self.pdf("in-raw", {4: (b"<< >>", FULL), 5: (GRAY, gray(zero=((0, 0), (0, 0))))})
+        out = os.path.join(self.d, "loose.pdf")
+        write_pdf(out, {4: (b"<< >>", FULL), 5: (GRAY, gray())}, header=b"%" + gray(zero=((0, 0), (0, 0))) + b"\n")
+        v, _ = czi.check(inp, out, 1, RECT)
+        self.assertEqual(v, "residue:1 original image stream(s) in the output's bytes outside its objects")
+        write_pdf(out, {4: (b"<< >>", FULL), 5: (GRAY, gray())})
+        self.assertEqual(czi.check(inp, out, 1, RECT)[0], "zero:25")
 
     def test_a_repaired_output_is_unhandled(self):
         bad = os.path.join(self.d, "bad.pdf")

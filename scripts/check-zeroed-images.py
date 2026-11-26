@@ -46,7 +46,14 @@ Method (the rect in default user space of PAGE, 1-based):
     original still drawn on another page) a copy is allowed only when
     another page of the output draws it, which is checked. A copy
     re-encoded differently is not detected by this step: the guarantee
-    of step 3 is about what the page draws.
+    of step 3 is about what the page draws. The output must be a single
+    revision (one `startxref`: an incremental update keeps earlier
+    revisions qpdf's object table does not show; `unhandled`), and its
+    raw bytes may not contain an original's bytes (32 or more) outside
+    the objects judged above. An original with /Alternates or /OPI:
+    `unhandled` (its other representations are not inventoried).
+    A form with /Ref, a content stream with external data (/F) or a
+    filter qpdf left: `unhandled`, on either file.
 
 Verdict on stdout: `zero:<n>` (n samples under the rect, all at their
 value); `no-samples` (no image sample meets the rect: nothing to settle);
@@ -114,6 +121,18 @@ class Doc:
         if not o or "stream" not in o:
             return None, None
         return o["stream"]["dict"], o["stream"].get("datafile")
+
+    def content(self, ref):
+        """A content stream's bytes as a reader draws them: no external
+        data (/F) and no filter qpdf left in place."""
+        d, _ = self.stream(ref)
+        if d is None:
+            raise Unhandled(f"content {ref} is not a stream")
+        if d.get("/F") is not None or d.get("/FFilter") is not None:
+            raise Unhandled("a content stream with external data (/F)")
+        if d.get("/Filter") is not None:
+            raise Unhandled(f"a content stream filter qpdf did not remove: {d.get('/Filter')}")
+        return self.data(ref)
 
     def data(self, ref):
         d, f = self.stream(ref)
@@ -232,7 +251,7 @@ def walk(doc, page_ref):
     if isinstance(contents, str) and doc.stream(contents)[0] is None:
         contents = doc.val(contents)  # a reference to the array of streams
     refs = contents if isinstance(contents, list) else ([contents] if contents else [])
-    data = b"\n".join(doc.data(r) for r in refs)
+    data = b"\n".join(doc.content(r) for r in refs)
     out = []
     run(doc, data, resources_of_page(doc, page_ref), (1, 0, 0, 1, 0, 0), out, [], 0)
     return out
@@ -284,6 +303,10 @@ def run(doc, data, res, ctm, out, chain, depth):
                 if sub == "/Image":
                     out.append((xo, ctm, res))
                 elif sub == "/Form":
+                    if d.get("/Ref") is not None:
+                        # A reference XObject: a reader may draw another
+                        # file's page instead of these bytes.
+                        raise Unhandled("a reference form (/Ref)")
                     if xo in chain:
                         raise Unhandled("a form drawing itself")
                     m = doc.val(d.get("/Matrix"))
@@ -296,7 +319,7 @@ def run(doc, data, res, ctm, out, chain, depth):
                         # Older files leave a form's resources to the page
                         # (ISO 32000 §7.8.3); which it is, is not settled here.
                         raise Unhandled("a form without its own resources")
-                    run(doc, doc.data(xo), fres, mul(m, ctm), out, chain + [xo], depth + 1)
+                    run(doc, doc.content(xo), fres, mul(m, ctm), out, chain + [xo], depth + 1)
                 else:
                     raise Unhandled(f"XObject subtype {sub}")
             elif v in (b"scn", b"SCN") and operands and operands[-1][0] == "name":
@@ -491,19 +514,26 @@ def stream_digests(docs):
 
 
 def originals(docs, refs):
-    """Digests of the streams refs, their /SMask and /Mask streams, in every
-    representation."""
-    out = set()
+    """{digest: bytes} of the streams refs, their /SMask and /Mask streams,
+    in every representation."""
+    out = {}
     for doc in docs:
         for ref in refs:
             d, f = doc.stream(ref)
-            if f:
-                out.add(digest_file(f))
-            for k in ("/SMask", "/Mask"):
-                mf = doc.stream((d or {}).get(k))[1]
-                if mf:
-                    out.add(digest_file(mf))
+            files = [f] + [doc.stream((d or {}).get(k))[1] for k in ("/SMask", "/Mask")]
+            for x in files:
+                if x:
+                    with open(x, "rb") as fh:
+                        b = fh.read()
+                    out[hashlib.sha256(b).hexdigest()] = b
     return out
+
+
+def revisions(pdf):
+    """startxref keywords in the file: more than one is an incremental
+    update, whose earlier revisions qpdf's object table does not show."""
+    with open(pdf, "rb") as fh:
+        return len(re.findall(rb"(?<![A-Za-z])startxref(?![A-Za-z])", fh.read()))
 
 
 def valid_rect(rect):
@@ -520,6 +550,8 @@ def check(inp, out, page_no, rect, elsewhere=False):
         try:
             rect = valid_rect(rect)
             dout = Doc(qpdf_json(out, tmp, "output"))
+            if revisions(out) != 1:
+                raise Unhandled("the output is not a single revision (incremental update or no startxref)")
             pref = page_ref(dout, page_no)
             checked = 0
             for ref, ctm, res in walk(dout, pref):
@@ -530,9 +562,23 @@ def check(inp, out, page_no, rect, elsewhere=False):
             din = Doc(qpdf_json(inp, tmp, "input"))
             din_raw = Doc(qpdf_json(inp, tmp, "input", "none"))
             refs = {ref for ref, ctm, _ in walk(din, page_ref(din, page_no)) if meets(ctm, rect)}
+            for ref in refs:
+                # An original with other representations: not inventoried.
+                d, _ = din.stream(ref)
+                for k in ("/Alternates", "/OPI"):
+                    if d.get(k) is not None:
+                        raise Unhandled(f"an input image with {k}")
             orig = originals((din, din_raw), refs)
             held = stream_digests((dout, Doc(qpdf_json(out, tmp, "output", "none"))))
-            carried = set().union(*(held[h] for h in orig & held.keys()))
+            carried = set().union(*(held[h] for h in orig.keys() & held.keys()))
+            # The file's bytes too, beyond the object table: an original
+            # stored as it was in the input, wherever it lies. (An exact
+            # copy listed in the table is judged below instead.)
+            with open(out, "rb") as fh:
+                whole = fh.read()
+            loose = [h for h, b in orig.items() if h not in held and len(b) >= 32 and b in whole]
+            if loose:
+                raise Residue(f"{len(loose)} original image stream(s) in the output's bytes outside its objects")
             if carried:
                 if not elsewhere:
                     raise Residue(f"{len(carried)} original image stream(s) under the rect still carried")
