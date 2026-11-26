@@ -257,13 +257,16 @@ fn what_is_not_edited_exactly_refuses() {
         ("/BitsPerComponent 8", ok.clone(), "BitsPerComponent"),
         ("/ColorSpace /DeviceGray", ok.clone(), "ColorSpace"),
         ("/SMask 9 0 R", ok.clone(), "SMask"),
-        ("/ImageMask 9 0 R", ok.clone(), "ImageMask"),
+        ("/ImageMask 10 0 R", ok.clone(), "ImageMask"),
+        // An inline-image abbreviation readers may read instead.
+        ("/D [1 0]", ok.clone(), "abbreviation"),
+        ("/IM true", ok.clone(), "abbreviation"),
         ("", ok[..20].to_vec(), "length"),
     ] {
         let pdf = page(
             &format!("0 g {DRAW}"),
             mask(extra, &data),
-            vec![(9, b"[0 1]".to_vec())],
+            vec![(9, b"[0 1]".to_vec()), (10, b"true".to_vec())],
         );
         let e = refused(&pdf);
         assert!(e.contains(want), "{extra}: {e}");
@@ -289,4 +292,50 @@ fn what_is_not_edited_exactly_refuses() {
         &RedactOptions::new().with_limits(Limits::default().with_max_image_bytes(16)),
     );
     assert!(matches!(e, Err(Error::LimitExceeded { .. })), "{e:?}");
+}
+
+/// A width that does not fill its last byte (13 samples, 2 bytes a
+/// row): the padding bits are neither edited nor counted.
+#[test]
+fn rows_with_padding_bits() {
+    let data: Vec<u8> = (0..13u8)
+        .flat_map(|y| [y.wrapping_mul(37), 0b1010_1000])
+        .collect();
+    let m = stream_obj(
+        "/Type /XObject /Subtype /Image /Width 13 /Height 13 /ImageMask true",
+        &data,
+    );
+    let pdf = page(&format!("0 g {DRAW}"), m, vec![]);
+    let r = run(&pdf, RIGHT).unwrap();
+    let out = images(&r.output);
+    assert_eq!(out.len(), 1);
+    for y in 0..13usize {
+        let (a, b) = (out[0][2 * y], out[0][2 * y + 1]);
+        // Columns 0..6 (page x < 100) kept; 7..13 set to 1; padding kept.
+        assert_eq!(a & 0b1111_1100, data[2 * y] & 0b1111_1100, "row {y}");
+        assert_eq!(a & 0b0000_0001, 1, "row {y}");
+        assert_eq!(b & 0b1111_1000, 0b1111_1000, "row {y}");
+        assert_eq!(
+            b & 0b0000_0111,
+            data[2 * y + 1] & 0b0000_0111,
+            "row {y}: padding"
+        );
+    }
+}
+
+/// JBIG2 (1 = black in the file, delivered as sample 0 = paints): the
+/// right half of each row painted, then not.
+#[test]
+fn a_jbig2_mask() {
+    let m = stream_obj(
+        "/Type /XObject /Subtype /Image /Width 8 /Height 2 /ImageMask true /Filter /JBIG2Decode",
+        &common::jbig2_8x2(),
+    );
+    let pdf = page(&format!("0 g {DRAW}"), m, vec![]);
+    assert_eq!(rgb(&pdf, 125, 101), (0, 0, 0));
+    assert_eq!(rgb(&pdf, 75, 101), (255, 255, 255));
+    let r = run(&pdf, RIGHT).unwrap();
+    assert_eq!(r.images_edited, 1);
+    assert_eq!(rgb(&r.output, 125, 101), (255, 255, 255));
+    assert_eq!(rgb(&r.output, 75, 101), (255, 255, 255));
 }

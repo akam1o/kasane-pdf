@@ -782,6 +782,33 @@ pub(crate) fn validate_image(
         }
     }
 
+    // Redaction: an image XObject with an inline-image abbreviation
+    // (Table 93) is refused — readers fall back to it, pdf.js even reads
+    // `/D` before `/Decode`, so it may change how the input or the
+    // edited copy is read.
+    if redaction {
+        for k in [
+            b"BPC".as_slice(),
+            b"CS",
+            b"D",
+            b"DP",
+            b"F",
+            b"H",
+            b"IM",
+            b"I",
+            b"W",
+        ] {
+            if dict.contains_key(k) {
+                return Err(Error::Unsupported {
+                    feature: "image attribute",
+                    detail: format!(
+                        "/{} (an inline-image abbreviation) on an image XObject",
+                        String::from_utf8_lossy(k)
+                    ),
+                });
+            }
+        }
+    }
     // Redaction edits a stencil mask (§8.9.6.2) too: one bit per
     // sample, no colour space; its samples inside the rects are set to
     // the value that paints nothing (`stencil_unpainted`).

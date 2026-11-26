@@ -837,7 +837,7 @@ fn verify(
         != 0
     {
         return Err(fail(format!(
-            "the rects still hit {} codes, {} nonzero pixels, {} paths, {} paths to cut, {} \
+            "the rects still hit {} codes, {} image samples, {} paths, {} paths to cut, {} \
              shadings, {} links, {} annotations",
             again.codes_removed_total,
             again.pixels_changed_total,
