@@ -96,6 +96,15 @@ are on the [roadmap](architecture.md#roadmap).
   §10.3.5 conversion (no colour management: Poppler and Quartz, which
   manage CMYK, differ from it by ΔE00 ≈ 5–25 on saturated colours; the
   compat runner reports such pages, they are not defects).
+- **Group colour spaces**: only a DeviceCMYK `/CS` of the page group or
+  of an isolated, non-knockout group is honoured (blending in CMYK); a
+  DeviceGray or calibrated `/CS` blends in RGB, as does a DeviceCMYK one
+  with a non-separable blend mode, a knockout group, an isolated group
+  in another space or a pattern selected outside it (reported in
+  `color_approximations`). A soft mask's luminosity is taken from its
+  group painted in RGB, whatever the group's `/CS`. A page or group
+  blending in CMYK is painted twice (twice the interpretation work and
+  one more buffer of its size).
 - **Text**: no hinting, no shaping (ligature substitution, kerning
   from GPOS); glyphs are placed exactly where the content stream
   puts them.

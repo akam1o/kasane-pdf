@@ -56,6 +56,14 @@ versions follow [Semantic Versioning](https://semver.org/).
   still counts as hidden. (#85)
 
 ### Fixed
+- Rendering: a page group or isolated transparency group whose `/CS` is
+  DeviceCMYK blended in RGB; it now blends in DeviceCMYK (§11.3.4):
+  colours converted to CMYK, separable blend modes on the complemented
+  components, the result converted by §10.3.5 — for example magenta
+  under black with Difference is green, not magenta. What cannot be
+  blended there exactly (non-separable modes, knockout groups, nested
+  groups in another space) is blended in RGB as before and reported in
+  `color_approximations`.
 - `redact` refused long documents with Type 3 fonts with
   `max_diag_exec_ops`: the walk that finds which Type 3 glyphs the input
   and the output show counted the operations of every page against the

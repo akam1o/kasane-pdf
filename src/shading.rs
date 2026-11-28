@@ -35,7 +35,7 @@
 
 use std::rc::Rc;
 
-use crate::colorspace::ColorSpace;
+use crate::colorspace::{ColorSpace, PaintTarget};
 use crate::document::Document;
 use crate::error::Error;
 use crate::function::{parse_function, Function};
@@ -594,11 +594,15 @@ fn int_entry(dict: &Dict, key: &[u8], allowed: &[u32]) -> Result<u32, Error> {
 }
 
 /// Parse a shading dictionary or stream.
+/// `target`: how colours are painted (`PaintTarget::Rgb` outside a
+/// DeviceCMYK blending space); the shading's colours are converted with
+/// it once, here.
 pub(crate) fn parse_shading(
     doc: &Document,
     obj: &Object,
     resources: &Object,
     limits: &Limits,
+    target: PaintTarget,
 ) -> Result<Shading, Error> {
     let obj = doc.deref(obj)?;
     let dict: &Dict = obj
@@ -649,7 +653,7 @@ pub(crate) fn parse_shading(
                     cs.ncomps()
                 )));
             }
-            let rgb = cs.to_rgb(&comps)?;
+            let rgb = target.rgb(&cs, &comps)?;
             Some([to_u8(rgb[0]), to_u8(rgb[1]), to_u8(rgb[2])])
         }
     };
@@ -731,7 +735,7 @@ pub(crate) fn parse_shading(
                 for i in 0..FN_GRID {
                     let x = domain[0] + (domain[1] - domain[0]) * i as f64 / (FN_GRID - 1) as f64;
                     let out = func.eval(&[x, y])?;
-                    grid.push(rgb8(&cs, &out, truncate)?);
+                    grid.push(rgb8(&cs, &out, truncate, target)?);
                 }
             }
             ShadingKind::Function(FunctionShading { domain, inv, grid })
@@ -792,7 +796,7 @@ pub(crate) fn parse_shading(
                     "shading /Function must take one input (t)".into(),
                 ));
             }
-            lut = sample_lut(&func, &cs, domain, truncate)?;
+            lut = sample_lut(&func, &cs, domain, truncate, target)?;
             kind
         }
         _ => {
@@ -834,7 +838,7 @@ pub(crate) fn parse_shading(
                         "mesh shading /Decode range for t must be increasing".into(),
                     ));
                 }
-                lut = sample_lut(f, &cs, (t0, t1), truncate)?;
+                lut = sample_lut(f, &cs, (t0, t1), truncate, target)?;
             }
             let params = MeshParams {
                 bpc,
@@ -843,6 +847,7 @@ pub(crate) fn parse_shading(
                 decode,
                 parametric: func.is_some(),
                 cs: &cs,
+                target,
                 max_tris: limits.max_shading_triangles,
             };
             let mut reader = BitReader {
@@ -904,19 +909,25 @@ fn sample_lut(
     cs: &ColorSpace,
     domain: (f64, f64),
     truncate: bool,
+    target: PaintTarget,
 ) -> Result<Vec<[u8; 3]>, Error> {
     let mut lut = Vec::with_capacity(LUT_SIZE);
     for i in 0..LUT_SIZE {
         let t = domain.0 + (domain.1 - domain.0) * i as f64 / (LUT_SIZE - 1) as f64;
         let out = func.eval(&[t])?;
-        lut.push(rgb8(cs, &out, truncate)?);
+        lut.push(rgb8(cs, &out, truncate, target)?);
     }
     Ok(lut)
 }
 
 /// `truncate`: the function's extra outputs are ignored (recovery,
 /// `ShadingOutputsTruncated`).
-fn rgb8(cs: &ColorSpace, comps: &[f64], truncate: bool) -> Result<[u8; 3], Error> {
+fn rgb8(
+    cs: &ColorSpace,
+    comps: &[f64],
+    truncate: bool,
+    target: PaintTarget,
+) -> Result<[u8; 3], Error> {
     let comps = if truncate && comps.len() > cs.ncomps() {
         &comps[..cs.ncomps()]
     } else {
@@ -929,7 +940,7 @@ fn rgb8(cs: &ColorSpace, comps: &[f64], truncate: bool) -> Result<[u8; 3], Error
             cs.ncomps()
         )));
     }
-    let rgb = cs.to_rgb(comps)?;
+    let rgb = target.rgb(cs, comps)?;
     Ok([to_u8(rgb[0]), to_u8(rgb[1]), to_u8(rgb[2])])
 }
 
@@ -1001,6 +1012,7 @@ struct MeshParams<'a> {
     decode: Vec<(f64, f64)>,
     parametric: bool,
     cs: &'a ColorSpace,
+    target: PaintTarget,
     max_tris: u64,
 }
 
@@ -1042,7 +1054,7 @@ impl MeshParams<'_> {
             let s = ((comps[0] - t0) / (t1 - t0)).clamp(0.0, 1.0);
             return Ok(Some([s as f32, 0.0, 0.0]));
         }
-        let rgb = self.cs.to_rgb(&comps)?;
+        let rgb = self.target.rgb(self.cs, &comps)?;
         Ok(Some([rgb[0] as f32, rgb[1] as f32, rgb[2] as f32]))
     }
 
