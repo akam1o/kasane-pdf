@@ -117,7 +117,10 @@ are on the [roadmap](architecture.md#roadmap).
   RGB after its passes were abandoned starts no passes inside it.
   A work limit reached while scanning a tiling cell's resources for
   blend modes, or reading a group's `/CS`, fails the render (it used to
-  be read as an unreadable entry). A knockout page group with a DeviceCMYK `/CS` blends in
+  be read as an unreadable entry), as does a Type 3 or Type 1 `/Widths`
+  entry over the decoded-bytes or reference budget (it read as a zero
+  advance). Any read the document's budgets refuse during the passes
+  fails the render, even where a reader would carry on with a default. A knockout page group with a DeviceCMYK `/CS` blends in
   RGB (reported).
 - **Text**: no hinting, no shaping (ligature substitution, kerning
   from GPOS); glyphs are placed exactly where the content stream

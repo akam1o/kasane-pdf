@@ -679,6 +679,7 @@ pub fn render_page(
     let mut reports = None;
     if let Some(cmyk) = page_group_cmyk(doc, page, &resources, limits)? {
         let start = doc.work_mark();
+        let refusals = doc.budget_refusals();
         let why = if let Err(why) = &cmyk {
             Some(why.to_string())
         } else if !buf_bytes
@@ -724,6 +725,11 @@ pub fn render_page(
                 }
             }
         };
+        if doc.budget_refusals() != refusals {
+            // A document budget refused a read in the passes and a
+            // reader went on with a default: the limit was reached.
+            return Err(doc.last_refusal().expect("a refusal was counted"));
+        }
         if let Some(why) = why {
             doc.reset_work(&start);
             pixmap.fill(tiny_skia::Color::TRANSPARENT);
@@ -4497,6 +4503,7 @@ impl<'a> Renderer<'a> {
         let saved = (self.gs.clone(), self.gs_stack.len());
         let interp = self.interp_mark();
         let start = self.work_mark();
+        let refusals = self.doc.budget_refusals();
         let mut after_first = None;
         let outer = self.cmyk_fallback.take();
         self.cmyk_regions += 1;
@@ -4558,6 +4565,12 @@ impl<'a> Renderer<'a> {
         self.gs = saved.0;
         self.gs_stack.truncate(saved.1);
         self.reset_interp(&interp);
+        if error.is_none() && self.doc.budget_refusals() != refusals {
+            // A document budget refused a read in the passes and a reader
+            // went on with a default: the passes may not have painted the
+            // same thing. The limit was reached: the render fails.
+            error = self.doc.last_refusal();
+        }
         if let Some(e) = error {
             // Not a reason to paint in RGB: the render fails, from the
             // state the passes started from.

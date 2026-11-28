@@ -45,6 +45,12 @@ pub struct Document {
     header_version: Option<(u8, u8)>,
     /// Remaining indirect-reference resolution budget.
     ref_budget: std::cell::Cell<u64>,
+    /// How many times the reference or decoded-bytes budget refused a
+    /// read (counted where the error is made, whether or not a caller
+    /// then swallows it): `budget_refusals`.
+    budget_refusals: std::cell::Cell<u64>,
+    /// The budget of the last refusal and its maximum.
+    last_refusal: std::cell::Cell<Option<(&'static str, u64)>>,
     /// Remaining decoded-bytes budget: `max_total_decoded_bytes` minus
     /// what the cached object streams retain, refreshed at the start
     /// and end of every top-level operation (see
@@ -411,6 +417,8 @@ impl Document {
             pages: Vec::new(),
             header_version,
             ref_budget: std::cell::Cell::new(limits.max_reference_depth),
+            budget_refusals: std::cell::Cell::new(0),
+            last_refusal: std::cell::Cell::new(None),
             decoded_budget: std::cell::Cell::new(limits.max_total_decoded_bytes),
             objstm_cached_bytes: std::cell::Cell::new(0),
             budget_scope_depth: std::cell::Cell::new(0),
@@ -483,6 +491,8 @@ impl Document {
             pages: Vec::new(),
             header_version,
             ref_budget: std::cell::Cell::new(limits.max_reference_depth),
+            budget_refusals: std::cell::Cell::new(0),
+            last_refusal: std::cell::Cell::new(None),
             decoded_budget: std::cell::Cell::new(limits.max_total_decoded_bytes),
             objstm_cached_bytes: std::cell::Cell::new(0),
             budget_scope_depth: std::cell::Cell::new(0),
@@ -730,6 +740,23 @@ impl Document {
         }
     }
 
+    /// How many reads the reference and decoded-bytes budgets have
+    /// refused so far. A painting repeated over the same content (the
+    /// passes of a DeviceCMYK group) compares it before and after: a
+    /// refusal some reader turned into a default (a width, an
+    /// unreadable entry) would make the repeat differ from the first
+    /// painting without an error.
+    pub(crate) fn budget_refusals(&self) -> u64 {
+        self.budget_refusals.get()
+    }
+
+    /// The last refusal as the error it was.
+    pub(crate) fn last_refusal(&self) -> Option<Error> {
+        self.last_refusal
+            .get()
+            .map(|(limit, max)| Error::LimitExceeded { limit, max })
+    }
+
     /// Put back the counters [`Document::work_mark`] read.
     pub(crate) fn reset_work(&self, m: &WorkMark) {
         self.raw_cr_object_strings.set(m.raw_cr);
@@ -836,6 +863,11 @@ impl Document {
                 });
             }
             if self.ref_budget.get() == 0 {
+                self.budget_refusals.set(self.budget_refusals.get() + 1);
+                self.last_refusal.set(Some((
+                    "max_reference_depth",
+                    self.limits.max_reference_depth,
+                )));
                 return Err(Error::LimitExceeded {
                     limit: "max_reference_depth",
                     max: self.limits.max_reference_depth,
@@ -1057,6 +1089,11 @@ impl Document {
         self.warnings.borrow_mut().extend(warnings);
         let cost = out.len() as u64;
         if cost > self.decoded_budget.get() {
+            self.budget_refusals.set(self.budget_refusals.get() + 1);
+            self.last_refusal.set(Some((
+                "max_total_decoded_bytes",
+                self.limits.max_total_decoded_bytes,
+            )));
             return Err(Error::LimitExceeded {
                 limit: "max_total_decoded_bytes",
                 max: self.limits.max_total_decoded_bytes,

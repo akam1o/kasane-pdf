@@ -1204,28 +1204,29 @@ fn a_tiling_in_a_soft_mask_inside_the_passes() {
     assert_eq!(seen, (true, true));
 }
 
-/// A PDF whose objects 1..=5 are `objs`' bodies (plain) and whose
-/// object 6 is `compressed` inside an object stream (object 7, padded
-/// with `pad` bytes, so that decoding it costs decoded bytes), with a
-/// cross-reference stream (object 8).
-fn with_object_stream(objs: &[Vec<u8>], compressed: &[u8], pad: usize) -> Vec<u8> {
+/// A PDF of plain objects `objs` (number, body) and object `inner`
+/// stored in an object stream (padded with `pad` bytes, so that decoding
+/// it costs decoded bytes), with a cross-reference stream; the object
+/// stream and the cross-reference stream take the next two numbers.
+fn with_object_stream(objs: &[(u32, Vec<u8>)], inner: (u32, &[u8]), pad: usize) -> Vec<u8> {
     let mut out = b"%PDF-1.7\n".to_vec();
-    let mut offs = Vec::new();
-    for (i, body) in objs.iter().enumerate() {
-        offs.push(out.len());
-        out.extend(format!("{} 0 obj\n", i + 1).as_bytes());
+    let mut offs = std::collections::BTreeMap::new();
+    for (n, body) in objs {
+        offs.insert(*n, out.len());
+        out.extend(format!("{n} 0 obj\n").as_bytes());
         out.extend(body);
         out.extend(b"\nendobj\n");
     }
-    let header = b"6 0 ";
-    let mut data = header.to_vec();
-    data.extend(compressed);
-    data.extend(b" ");
-    data.extend(vec![b' '; pad]);
-    let os_off = out.len();
+    let top = objs.iter().map(|o| o.0).chain([inner.0]).max().unwrap();
+    let (os, xn) = (top + 1, top + 2);
+    let header = format!("{} 0 ", inner.0).into_bytes();
+    let mut data = header.clone();
+    data.extend(inner.1);
+    data.extend(vec![b' '; pad + 1]);
+    offs.insert(os, out.len());
     out.extend(
         format!(
-            "7 0 obj\n<< /Type /ObjStm /N 1 /First {} /Length {} >>\nstream\n",
+            "{os} 0 obj\n<< /Type /ObjStm /N 1 /First {} /Length {} >>\nstream\n",
             header.len(),
             data.len()
         )
@@ -1234,44 +1235,34 @@ fn with_object_stream(objs: &[Vec<u8>], compressed: &[u8], pad: usize) -> Vec<u8
     out.extend(&data);
     out.extend(b"\nendstream\nendobj\n");
     let x_off = out.len();
-    let mut rows = vec![[0u8, 0, 0, 0, 0, 0xff, 0xff]];
-    for o in &offs {
-        let o = *o as u32;
-        rows.push([
-            1,
-            (o >> 24) as u8,
-            (o >> 16) as u8,
-            (o >> 8) as u8,
-            o as u8,
-            0,
-            0,
-        ]);
+    offs.insert(xn, x_off);
+    let row = |t: u8, v: u32, g: u16| {
+        [
+            t,
+            (v >> 24) as u8,
+            (v >> 16) as u8,
+            (v >> 8) as u8,
+            v as u8,
+            (g >> 8) as u8,
+            g as u8,
+        ]
+    };
+    let mut xs = Vec::new();
+    for n in 0..=xn {
+        xs.extend(if n == 0 {
+            row(0, 0, 0xffff)
+        } else if n == inner.0 {
+            row(2, os, 0)
+        } else if let Some(o) = offs.get(&n) {
+            row(1, *o as u32, 0)
+        } else {
+            row(0, 0, 0)
+        });
     }
-    rows.push([2, 0, 0, 0, 7, 0, 0]);
-    let o = os_off as u32;
-    rows.push([
-        1,
-        (o >> 24) as u8,
-        (o >> 16) as u8,
-        (o >> 8) as u8,
-        o as u8,
-        0,
-        0,
-    ]);
-    let o = x_off as u32;
-    rows.push([
-        1,
-        (o >> 24) as u8,
-        (o >> 16) as u8,
-        (o >> 8) as u8,
-        o as u8,
-        0,
-        0,
-    ]);
-    let xs: Vec<u8> = rows.concat();
     out.extend(
         format!(
-            "8 0 obj\n<< /Type /XRef /Size 9 /W [1 4 2] /Root 1 0 R /Length {} >>\nstream\n",
+            "{xn} 0 obj\n<< /Type /XRef /Size {} /W [1 4 2] /Root 1 0 R /Length {} >>\nstream\n",
+            xn + 1,
             xs.len()
         )
         .as_bytes(),
@@ -1279,6 +1270,15 @@ fn with_object_stream(objs: &[Vec<u8>], compressed: &[u8], pad: usize) -> Vec<u8
     out.extend(&xs);
     out.extend(format!("\nendstream\nendobj\nstartxref\n{x_off}\n%%EOF\n").as_bytes());
     out
+}
+
+fn stream_body(dict: &str, data: &[u8]) -> Vec<u8> {
+    [
+        format!("<< {dict} /Length {} >>\nstream\n", data.len()).as_bytes(),
+        data,
+        b"\nendstream",
+    ]
+    .concat()
 }
 
 #[test]
@@ -1299,23 +1299,20 @@ fn a_work_limit_in_the_blend_scan_is_not_a_blend() {
         let cell = b"0 0 0 1 k 0 0 1.5 1.5 re f";
         with_object_stream(
             &[
-                b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
-                b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
-                page.into_bytes(),
-                [format!("<< /Length {} >>\nstream\n", content.len()).as_bytes(), content, b"\nendstream"].concat(),
-                [
-                    format!(
-                        "<< /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 2 2] /XStep 1 /YStep 1 \
-                         /Resources << /ExtGState << /H 6 0 R >> >> /Length {} >>\nstream\n",
-                        cell.len()
-                    )
-                    .as_bytes(),
-                    cell,
-                    b"\nendstream",
-                ]
-                .concat(),
+                (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+                (3, page.into_bytes()),
+                (4, stream_body("", content)),
+                (
+                    5,
+                    stream_body(
+                        "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 2 2] /XStep 1 /YStep 1 \
+                         /Resources << /ExtGState << /H 6 0 R >> >>",
+                        cell,
+                    ),
+                ),
             ],
-            b"<< /BM /Multiply >>",
+            (6, b"<< /BM /Multiply >>"),
             4000,
         )
     };
@@ -1341,4 +1338,120 @@ fn a_work_limit_in_the_blend_scan_is_not_a_blend() {
         }
         assert!(ok && refused, "{g}: {ok} {refused}");
     }
+}
+
+#[test]
+fn a_type3_width_read_in_the_passes() {
+    // A Type 3 font whose /Widths entry is an indirect number kept in
+    // an object stream: each pass decodes the stream again (the caches are
+    // rolled back). Whatever max_total_decoded_bytes allows, the page is
+    // the full-budget result or refused — a width read cut short by the
+    // limit (a zero advance) never moves the second glyph.
+    // `g`: the page group; "form": an RGB page drawing the text in an
+    // isolated DeviceCMYK group form.
+    let mk = |g: &str| {
+        let form = g == "form";
+        let g = if form { "" } else { g };
+        let text: &[u8] = b"0 0 0 0 k 0 0 30 20 re f 0 .4 0 .4 k BT /F 20 Tf 2 3 Td (AA) Tj ET";
+        with_object_stream(
+            &[
+                (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+                (
+                    3,
+                    format!(
+                        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 30 20] /Contents 4 0 R {g} \
+                         /Resources << /Font << /F 5 0 R >> /XObject << /X 8 0 R >> >> >>"
+                    )
+                    .into_bytes(),
+                ),
+                (4, stream_body("", if form { b"/X Do" } else { text })),
+                (
+                    8,
+                    stream_body(
+                        "/Type /XObject /Subtype /Form /BBox [0 0 30 20] \
+                         /Group << /S /Transparency /I true /CS /DeviceCMYK >> /Resources << /Font << /F 5 0 R >> >>",
+                        text,
+                    ),
+                ),
+                (
+                    5,
+                    b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 300 500] /FontMatrix [.001 0 0 .001 0 0] \
+                      /CharProcs << /A 7 0 R >> /Encoding << /Differences [65 /A] >> /FirstChar 65 /LastChar 65 \
+                      /Widths [6 0 R] /Resources << >> >>"
+                        .to_vec(),
+                ),
+                (7, stream_body("", b"400 0 0 0 300 500 d1 0 0 300 500 re f")),
+            ],
+            (6, b"400"),
+            6000,
+        )
+    };
+    for g in [CMYK_PAGE, "form", ""] {
+        let full = with_limits(&mk(g), Limits::default()).unwrap();
+        let (mut ok, mut refused) = (false, false);
+        for n in (500..20_000).step_by(250) {
+            let l = Limits::default().with_max_total_decoded_bytes(n);
+            let Ok(doc) = Document::from_bytes_with_limits(&mk(g), l.clone()) else {
+                continue;
+            };
+            match render_page(
+                &doc,
+                &doc.pages()[0],
+                &RenderOptions::new().with_dpi(72.0).with_limits(l),
+            ) {
+                Ok(r) => {
+                    ok = true;
+                    assert_eq!(r.pixmap().data(), full.pixmap().data(), "{g} {n}");
+                }
+                Err(_) => refused = true,
+            }
+        }
+        assert!(ok && refused, "{g}: {ok} {refused}");
+    }
+}
+
+#[test]
+fn a_tile_limit_in_the_passes_is_not_a_reason_for_rgb() {
+    // A DeviceCMYK page under a luminosity mask whose group blends in
+    // DeviceCMYK too (Lighten), filling with a tiling of 16 cells, under
+    // max_pattern_tiles 1: the limit is reached in the passes and the
+    // render is refused. Painted again in RGB instead, the mask (not
+    // blended in CMYK there) would be black, the tiling skipped, and the
+    // page rendered white.
+    let pdf = page_of(
+        CMYK_PAGE,
+        "/ExtGState << /M << /SMask << /S /Luminosity /G 5 0 R >> >> >> /Pattern << /P 6 0 R >>",
+        b"/M gs /Pattern cs /P scn 0 0 10 10 re f",
+        vec![
+            (
+                5,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 10 10] \
+                     /Group << /S /Transparency /I true /CS /DeviceCMYK >> \
+                     /Resources << /ExtGState << /L << /BM /Lighten >> >> >>",
+                    b"1 1 1 0 k 0 0 10 10 re f /L gs 0 0 0 1 k 0 0 10 10 re f",
+                ),
+            ),
+            (
+                6,
+                stream_obj(
+                    "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 3 3] /XStep 3 /YStep 3 /Resources << >>",
+                    b"0 g 0 0 3 3 re f",
+                ),
+            ),
+        ],
+    );
+    let err = with_limits(&pdf, Limits::default().with_max_pattern_tiles(1)).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            kasane_pdf::Error::LimitExceeded {
+                limit: "max_pattern_tiles",
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert!(with_limits(&pdf, Limits::default()).is_ok());
 }
