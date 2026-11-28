@@ -107,10 +107,14 @@ are on the [roadmap](architecture.md#roadmap).
   with a DeviceCMYK `/CS`, blends in CMYK and is converted to RGB at its
   end). A page or group
   blending in CMYK is painted twice (twice the interpretation work and
-  one more buffer of its size): both passes get the same budgets and
-  buffer headroom, the work budgets are charged for one painting, and
-  a limit reached in a pass paints the page or group in RGB instead
-  (reported). A knockout page group with a DeviceCMYK `/CS` blends in
+  one more buffer of its size): both passes get the same buffer
+  headroom, and the work budgets (`max_xobject_invocations`,
+  `max_text_codes`, `max_pattern_tiles`, dashed-stroke work, decoded
+  bytes, reference resolutions) count both passes and any abandoned
+  attempt, so such a page can reach a limit the same page without the
+  group colour space does not — a limit then fails the render (the
+  buffer budget alone sends it to RGB, reported). A group painted in
+  RGB after its passes were abandoned starts no passes inside it. A knockout page group with a DeviceCMYK `/CS` blends in
   RGB (reported).
 - **Text**: no hinting, no shaping (ligature substitution, kerning
   from GPOS); glyphs are placed exactly where the content stream

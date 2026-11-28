@@ -623,12 +623,20 @@ fn a_knockout_page_group_and_an_unreadable_cs() {
 }
 
 #[test]
-fn the_passes_cost_the_budgets_one_painting() {
-    // An isolated DeviceCMYK group drawing one inner form, under a
-    // max_xobject_invocations that one painting of the page needs
-    // exactly: blended in CMYK, not refused — and with a non-separable
-    // mode inside, painted in RGB under the same limit, not refused.
-    let mk = |mode: &str| {
+fn every_pass_counts_against_the_work_budgets() {
+    // An isolated DeviceCMYK group drawing one inner form: one painting
+    // invokes 2 forms, the group's two passes 3. The work budgets count
+    // what is really done, both passes included: under
+    // max_xobject_invocations 2 the CMYK group is refused (a work limit
+    // ends the render — it is not painted again in RGB), where the same
+    // page without the group colour space renders; under 3 it renders.
+    // `mode` set before the inner form, or (`late`) after it.
+    let mk_at = |cs: &str, mode: &str, late: bool| {
+        let body = if late {
+            format!("{} 0 0 10 10 re f /In Do /GS gs 0 0 1 1 re f", k(CB))
+        } else {
+            format!("{} 0 0 10 10 re f /GS gs /In Do", k(CB))
+        };
         build_pdf(&[
             (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
             (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
@@ -642,10 +650,12 @@ fn the_passes_cost_the_budgets_one_painting() {
             (
                 5,
                 stream_obj(
-                    "/Type /XObject /Subtype /Form /BBox [0 0 10 10] \
-                     /Group << /S /Transparency /I true /CS /DeviceCMYK >> \
-                     /Resources << /XObject << /In 6 0 R >> /ExtGState << /GS 7 0 R >> >>",
-                    format!("{} 0 0 10 10 re f /GS gs /In Do", k(CB)).as_bytes(),
+                    &format!(
+                        "/Type /XObject /Subtype /Form /BBox [0 0 10 10] \
+                         /Group << /S /Transparency /I true {cs} >> \
+                         /Resources << /XObject << /In 6 0 R >> /ExtGState << /GS 7 0 R >> >>"
+                    ),
+                    body.as_bytes(),
                 ),
             ),
             (
@@ -658,10 +668,29 @@ fn the_passes_cost_the_budgets_one_painting() {
             (7, format!("<< /BM /{mode} >>").into_bytes()),
         ])
     };
-    let tight = RenderOptions::new()
-        .with_dpi(72.0)
-        .with_limits(Limits::default().with_max_xobject_invocations(2));
-    let r = render(mk("Screen"), &tight);
+    let mk = |cs: &str, mode: &str| mk_at(cs, mode, false);
+    let under = |n: u64| {
+        RenderOptions::new()
+            .with_dpi(72.0)
+            .with_limits(Limits::default().with_max_xobject_invocations(n))
+    };
+    let try_render = |pdf: Vec<u8>, o: &RenderOptions| {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        render_page(&doc, &doc.pages()[0], o)
+    };
+    assert!(try_render(mk("", "Screen"), &under(2)).is_ok());
+    let err = try_render(mk("/CS /DeviceCMYK", "Screen"), &under(2)).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            kasane_pdf::Error::LimitExceeded {
+                limit: "max_xobject_invocations",
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    let r = try_render(mk("/CS /DeviceCMYK", "Screen"), &under(3)).unwrap();
     close(
         rgb(&r, 5, 5),
         cmyk_to_rgb(blend_cmyk("Screen", CB, CS)),
@@ -672,8 +701,95 @@ fn the_passes_cost_the_budgets_one_painting() {
         "{:?}",
         r.color_approximations()
     );
-    let r = render(mk("Hue"), &tight);
+    // Abandoned at Hue *after* the inner form: the attempt's invocation
+    // of it counts, then the RGB painting's — 1 + 1 + 1. Abandoned
+    // before it: 1 + 1.
+    assert!(try_render(mk_at("", "Hue", true), &under(2)).is_ok());
+    assert!(try_render(mk_at("/CS /DeviceCMYK", "Hue", true), &under(2)).is_err());
+    let r = try_render(mk_at("/CS /DeviceCMYK", "Hue", true), &under(3)).unwrap();
     assert!(!r.color_approximations().is_empty());
+    assert!(try_render(mk_at("/CS /DeviceCMYK", "Hue", false), &under(2)).is_ok());
+}
+
+/// Expensive dashed strokes (about 1.2 million outline edges at 72
+/// dpi, three tenths of the render's 4 million) then a fill.
+const DASHED: &str = "0 0 0 1 K 0.1 w [0.001 0.001] 0 d \
+    0 0 m 100 0 l S 0 1 m 100 1 l S 0 2 m 100 2 l S \
+    0 3 m 100 3 l S 0 4 m 100 4 l S 0 5 m 100 5 l S";
+
+/// `depth` isolated DeviceCMYK groups, each drawing the next; the
+/// innermost strokes `DASHED`, then sets `/BM /Hue` (not blended in
+/// CMYK) and fills. The page draws the outermost `copies` times.
+fn nested_groups(depth: u32, copies: usize, cs: &str) -> Vec<u8> {
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 10] /Contents 4 0 R \
+              /Resources << /XObject << /X 10 0 R >> >> >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", "/X Do ".repeat(copies).as_bytes())),
+        (5, b"<< /BM /Hue >>".to_vec()),
+    ];
+    for i in 0..depth {
+        let group = format!(
+            "/Type /XObject /Subtype /Form /BBox [0 0 100 10] /Group << /S /Transparency /I true {cs} >>"
+        );
+        objs.push(if i + 1 == depth {
+            (
+                10 + i,
+                stream_obj(
+                    &format!("{group} /Resources << /ExtGState << /H 5 0 R >> >>"),
+                    format!("{DASHED} /H gs 0 0 0 1 k 0 0 10 10 re f").as_bytes(),
+                ),
+            )
+        } else {
+            (
+                10 + i,
+                stream_obj(
+                    &format!("{group} /Resources << /XObject << /X {} 0 R >> >>", 11 + i),
+                    b"/X Do",
+                ),
+            )
+        });
+    }
+    build_pdf(&objs)
+}
+
+#[test]
+fn a_region_painted_in_rgb_starts_no_attempt_inside_it() {
+    // Four nested DeviceCMYK groups whose innermost one is not blended
+    // in CMYK, after expensive drawing: the outermost group's attempt is
+    // abandoned, and the whole is painted once in RGB — the inner groups
+    // start no attempts of their own. Two paintings of the dashed
+    // strokes fit the render's dashed-stroke work; five (an attempt per
+    // level and the RGB painting) would not.
+    let r = render(nested_groups(4, 1, "/CS /DeviceCMYK"), &opts());
+    assert!(
+        r.color_approximations()
+            .iter()
+            .any(|a| a.contains("non-separable")),
+        "{:?}",
+        r.color_approximations()
+    );
+    let b = render(nested_groups(4, 1, ""), &opts());
+    assert_eq!(r.pixmap().data(), b.pixmap().data());
+}
+
+#[test]
+fn abandoned_attempts_count_against_the_work_budgets() {
+    // Two sibling groups like the above, one level each: each is
+    // attempted (the dashed strokes painted, then abandoned) and painted
+    // in RGB — four paintings of the strokes, past the render's
+    // dashed-stroke work: refused. Without the group colour space the
+    // two paintings fit. The work of an abandoned attempt is not given
+    // back.
+    let doc = Document::from_bytes(&nested_groups(1, 2, "/CS /DeviceCMYK")).unwrap();
+    assert!(render_page(&doc, &doc.pages()[0], &opts()).is_err());
+    let doc = Document::from_bytes(&nested_groups(1, 2, "")).unwrap();
+    assert!(render_page(&doc, &doc.pages()[0], &opts()).is_ok());
 }
 
 #[test]

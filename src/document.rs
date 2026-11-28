@@ -706,17 +706,17 @@ impl Document {
         });
     }
 
-    /// The counters an operation moves — the reference and decoded
-    /// budgets, the warnings and recoveries, the unescaped-CR count — to
-    /// put back with [`Document::reset_work`]: a painting repeated over
-    /// the same content (the passes of a DeviceCMYK group) charges them
-    /// once, as a single painting does.
+    /// What an operation adds that a repeat of it would add again — the
+    /// warnings and recoveries, the unescaped-CR count, the object
+    /// streams and fonts it cached — to put back with
+    /// [`Document::reset_work`] before a painting is repeated over the
+    /// same content (the passes of a DeviceCMYK group). The reference
+    /// and decoded-bytes budgets are not put back: they bound the work
+    /// really done, repeats included.
     pub(crate) fn work_mark(&self) -> WorkMark {
         let w = self.warnings.borrow();
         let me = self as *const Document as usize;
         WorkMark {
-            refs: self.ref_budget.get(),
-            decoded: self.decoded_budget.get(),
             raw_cr: self.raw_cr_object_strings.get(),
             warnings: (w.list.clone(), w.dropped, w.recoveries),
             objstms: self.objstm_cache.borrow().keys().copied().collect(),
@@ -732,15 +732,13 @@ impl Document {
 
     /// Put back the counters [`Document::work_mark`] read.
     pub(crate) fn reset_work(&self, m: &WorkMark) {
-        self.ref_budget.set(m.refs);
-        self.decoded_budget.set(m.decoded);
         self.raw_cr_object_strings.set(m.raw_cr);
         let mut w = self.warnings.borrow_mut();
         w.list = m.warnings.0.clone();
         w.dropped = m.warnings.1;
         w.recoveries = m.warnings.2;
-        // What was cached since is dropped too: a replay pays for it
-        // again, as the painting it repeats did.
+        // What was cached since is dropped too: a replay decodes it
+        // again, and pays for it again.
         self.objstm_cache
             .borrow_mut()
             .retain(|k, _| m.objstms.contains(k));
@@ -1716,8 +1714,6 @@ impl Document {
 /// Counters of a document read by [`Document::work_mark`].
 #[derive(Clone)]
 pub(crate) struct WorkMark {
-    refs: u64,
-    decoded: u64,
     raw_cr: u64,
     warnings: (Vec<crate::Warning>, u64, u64),
     objstms: std::collections::HashSet<u32>,
@@ -1748,8 +1744,9 @@ mod tests {
     #[test]
     fn reset_work_drops_what_was_cached_since_the_mark() {
         // An object in an object stream decoded after the mark: its
-        // stream is cached and its bytes charged; reset_work puts back
-        // both, so a replay pays for it again.
+        // stream is cached and its bytes charged; reset_work drops the
+        // stream but refunds nothing — a replay decodes it, and pays,
+        // again.
         let data = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/objstm.pdf"
@@ -1764,11 +1761,47 @@ mod tests {
         let before = doc.decoded_left();
         doc.resolve(IndirectRef::new(5, 0)).unwrap();
         assert!(!doc.objstm_cache.borrow().is_empty());
-        assert!(doc.decoded_left() < before);
+        let after = doc.decoded_left();
+        assert!(after < before);
         doc.reset_work(&mark);
         assert!(doc.objstm_cache.borrow().is_empty());
-        assert_eq!(doc.decoded_left(), before);
         assert_eq!(doc.objstm_cached_bytes.get(), mark.objstm_bytes);
+        assert_eq!(doc.decoded_left(), after, "no refund");
+        doc.resolve(IndirectRef::new(5, 0)).unwrap();
+        assert!(doc.decoded_left() < after, "charged again");
+    }
+
+    #[test]
+    fn reset_work_keeps_the_fonts_cached_before_the_mark() {
+        // Fonts load once per (dictionary, limits): entries under three
+        // limits. Outer mark after A, inner mark after B; C loaded last.
+        // The inner reset keeps A and B, the outer one A; each kept font
+        // is a cache hit (nothing decoded), each dropped one decodes again.
+        let doc = Document::from_bytes(&font_doc(PLAIN)).unwrap();
+        let _fonts = doc.font_cache_scope();
+        let _scope = doc.decoded_budget_scope();
+        let limits = |n: u64| crate::Limits::default().with_max_total_decoded_bytes(1 << (30 + n));
+        let me = &doc as *const Document as usize;
+        let cached = || FONT_CACHE.with(|c| c.borrow().get(&me).map_or(0, |f| f.fonts.len()));
+        let bytes = || FONT_CACHE.with(|c| c.borrow().get(&me).map_or(0, |f| f.bytes));
+        load(&doc, &limits(0)).unwrap();
+        let outer = doc.work_mark();
+        let (n_a, b_a) = (cached(), bytes());
+        load(&doc, &limits(1)).unwrap();
+        let inner = doc.work_mark();
+        let (n_ab, b_ab) = (cached(), bytes());
+        load(&doc, &limits(2)).unwrap();
+        assert_eq!((n_a, n_ab, cached()), (1, 2, 3));
+        doc.reset_work(&inner);
+        assert_eq!((cached(), bytes()), (n_ab, b_ab));
+        doc.reset_work(&outer);
+        assert_eq!((cached(), bytes()), (n_a, b_a));
+        let left = doc.decoded_left();
+        load(&doc, &limits(0)).unwrap();
+        assert_eq!(doc.decoded_left(), left, "A: a hit");
+        load(&doc, &limits(1)).unwrap();
+        assert!(doc.decoded_left() < left, "B: loaded again");
+        assert_eq!(cached(), 2);
     }
 
     /// A one-page document drawing `/F` (object 5, a TrueType font

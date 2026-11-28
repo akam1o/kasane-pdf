@@ -579,7 +579,8 @@ pub fn render_page(
     // group, why its passes were abandoned.
     let paint = |pixmap: &mut Pixmap,
                  target: PaintTarget,
-                 live_bytes: u64|
+                 live_bytes: u64,
+                 suppressed: bool|
      -> Result<(PageReports, Option<String>), Error> {
         let mut renderer = Renderer {
             limits,
@@ -616,6 +617,7 @@ pub fn render_page(
             paint_target: target,
             cmyk_regions: u32::from(target != PaintTarget::Rgb),
             cmyk_fallback: None,
+            cmyk_suppressed: 0,
             mask_bytes: Rc::default(),
             dash_work: DashBudget::default(),
             pattern_base: Matrix::IDENTITY,
@@ -631,6 +633,7 @@ pub fn render_page(
             mc_stack: Vec::new(),
             hidden: 0,
         };
+        renderer.cmyk_suppressed = u32::from(suppressed);
         let r = renderer.repaint_colors().and_then(|()| {
             renderer.run(&ops)?;
             let page_resources = renderer.resources.clone();
@@ -656,11 +659,11 @@ pub fn render_page(
     // (honoured whatever /I says: a page imposed directly is isolated).
     // DeviceCMYK: painted in two passes (`PaintTarget`) onto two
     // transparent page buffers, each with both buffers' headroom and the
-    // document's counters as before the first (so both take the same
-    // decisions, and the page costs its budgets one painting), combined,
+    // document's reports and caches as before the first (so both take
+    // the same decisions; the work budgets count both), combined,
     // converted, and only then composited on white paper. Anything the
-    // passes cannot paint, or a limit reached in them → the whole page
-    // in RGB, as before, reported.
+    // passes cannot paint, or the buffer budget reached in them → the
+    // whole page in RGB, as before, reported; another limit fails it.
     let mut reports = None;
     if let Some(cmyk) = page_group_cmyk(doc, page, &resources, limits) {
         let start = doc.work_mark();
@@ -672,12 +675,11 @@ pub fn render_page(
         {
             Some("buffers over max_render_buffer_bytes".to_string())
         } else {
-            let pass = |pixmap: &mut Pixmap, target| match paint(pixmap, target, buf_bytes) {
+            // `paint` turns the buffer budget into a reason to paint in
+            // RGB; any other limit fails the render (its work was done).
+            let pass = |pixmap: &mut Pixmap, target| match paint(pixmap, target, buf_bytes, false) {
                 Ok((r, None)) => Ok(Ok(r)),
                 Ok((_, Some(why))) => Ok(Err(why)),
-                Err(Error::LimitExceeded { limit, .. }) => {
-                    Ok(Err(format!("{limit} reached in its passes")))
-                }
                 Err(e) => Err(e),
             };
             pixmap.fill(tiny_skia::Color::TRANSPARENT);
@@ -716,7 +718,8 @@ pub fn render_page(
             if !transparent_page {
                 pixmap.fill(ts_color(Color::WHITE));
             }
-            let (mut r, _) = paint(&mut pixmap, PaintTarget::Rgb, 0)?;
+            // No group of the page attempts passes of its own.
+            let (mut r, _) = paint(&mut pixmap, PaintTarget::Rgb, 0, true)?;
             let a = format!("DeviceCMYK blending colour space: blended in RGB ({why})");
             if !r.color_approximations.contains(&a) {
                 r.color_approximations.push(a);
@@ -730,7 +733,7 @@ pub fn render_page(
     let reports = match reports {
         Some(r) => r,
         None => {
-            let (r, _) = paint(&mut pixmap, PaintTarget::Rgb, 0)?;
+            let (r, _) = paint(&mut pixmap, PaintTarget::Rgb, 0, false)?;
             if transparent_page {
                 composite_on_white(&mut pixmap);
             }
@@ -2094,6 +2097,10 @@ pub(crate) struct Renderer<'a> {
     /// in its passes (`cmyk_unsupported`): the outermost region is then
     /// painted again in RGB, as a whole.
     cmyk_fallback: Option<String>,
+    /// Depth of DeviceCMYK regions being painted again in RGB after
+    /// their passes were abandoned: no group inside them starts passes of
+    /// its own (each region is attempted once, whatever its nesting).
+    cmyk_suppressed: u32,
     /// `dashed_stroke`'s work so far in this render, bounded by
     /// `MAX_DASHED_PAGE_WORK` and `MAX_DASHED_RENDER_EDGES`.
     dash_work: DashBudget,
@@ -2519,6 +2526,7 @@ impl<'a> Renderer<'a> {
             paint_target: PaintTarget::Rgb,
             cmyk_regions: 0,
             cmyk_fallback: None,
+            cmyk_suppressed: 0,
             mask_bytes: Rc::default(),
             dash_work: DashBudget::default(),
             pattern_base: Matrix::IDENTITY,
@@ -4258,6 +4266,12 @@ impl<'a> Renderer<'a> {
                 self.note_cmyk_approximation("a knockout group");
                 return Ok(false);
             }
+            if isolated && self.cmyk_suppressed > 0 {
+                // Inside a region painted in RGB after its passes were
+                // abandoned: one attempt per region.
+                self.note_cmyk_approximation("inside a group blended in RGB");
+                return Ok(false);
+            }
             return Ok(isolated);
         }
         if knockout {
@@ -4318,21 +4332,19 @@ impl<'a> Renderer<'a> {
             None => {
                 self.gs = saved.0;
                 self.gs_stack.truncate(saved.1);
-                self.run_in_layer(ops, true, false)
+                self.cmyk_suppressed += 1;
+                let r = self.run_in_layer(ops, true, false);
+                self.cmyk_suppressed -= 1;
+                r
             }
         }
     }
 
-    /// What a painting has moved so far — the work budgets, the
-    /// reports, the document's counters — to repeat it from the same
-    /// point (`reset_work`).
+    /// What a painting has added so far that a repeat of it would add
+    /// again — its reports, the document's warnings and the caches it
+    /// filled — to repeat it from the same point (`reset_work`).
     fn work_mark(&self) -> RendererMark {
         RendererMark {
-            xobject_invocations: self.xobject_invocations,
-            text_codes: self.text_codes,
-            pattern_tiles: self.pattern_tiles,
-            extract_unicode_bytes: self.extract_unicode_bytes,
-            dash_work: self.dash_work.clone(),
             substitutions: self.substitutions.len(),
             color_approximations: self.color_approximations.len(),
             image_approximations: self.image_approximations.borrow().len(),
@@ -4393,11 +4405,6 @@ impl<'a> Renderer<'a> {
     }
 
     fn reset_work(&mut self, m: &RendererMark) {
-        self.xobject_invocations = m.xobject_invocations;
-        self.text_codes = m.text_codes;
-        self.pattern_tiles = m.pattern_tiles;
-        self.extract_unicode_bytes = m.extract_unicode_bytes;
-        self.dash_work = m.dash_work.clone();
         self.substitutions.truncate(m.substitutions);
         self.color_approximations.truncate(m.color_approximations);
         self.image_approximations
@@ -4408,13 +4415,13 @@ impl<'a> Renderer<'a> {
 
     /// Run `ops` once per pass onto transparent `w × h` layers and
     /// combine them; `None` when the passes were abandoned (reported).
-    /// Both passes start from the same state, budgets and buffer
-    /// headroom (both layers counted in each), so they take the same
-    /// decisions; the work counters are left as after one pass — the
-    /// passes repeat one painting — and, abandoned, as before them, so
-    /// that the RGB painting that follows runs exactly as it would have.
-    /// A limit reached in a pass abandons it rather than failing: the
-    /// RGB painting is then judged on its own.
+    /// Both passes start from the same state and buffer headroom (both
+    /// layers counted in each), so they take the same decisions — no
+    /// decision depends on the work budgets, which count both passes and
+    /// any abandoned attempt and only ever fail a render. The buffer
+    /// budget, which counts live memory, abandons the passes when it is
+    /// reached (RGB needs one layer fewer); any other limit fails the
+    /// render, as the work it bounds was done.
     fn cmyk_passes(
         &mut self,
         ops: &[Operation],
@@ -4464,8 +4471,11 @@ impl<'a> Renderer<'a> {
             }
             match r {
                 Ok(()) => {}
-                Err(Error::LimitExceeded { limit, .. }) => {
-                    failure = Some(format!("{limit} reached in its passes"));
+                Err(Error::LimitExceeded {
+                    limit: "max_render_buffer_bytes",
+                    ..
+                }) => {
+                    failure = Some("buffers over max_render_buffer_bytes".to_string());
                     break;
                 }
                 Err(e) => {
@@ -9309,13 +9319,13 @@ struct InterpMark {
     layer_bytes: u64,
 }
 
-/// What `Renderer::work_mark` reads.
+/// What `Renderer::work_mark` reads: the reports a painting adds and
+/// the document's warnings and caches — not the work it did. The work
+/// budgets (Do invocations, text codes, pattern tiles, dashed-stroke
+/// work, the document's decoded bytes and reference resolutions) count
+/// every pass and every abandoned attempt: they bound the work a render
+/// really does, so nothing is refunded.
 struct RendererMark {
-    xobject_invocations: u64,
-    text_codes: u64,
-    pattern_tiles: u64,
-    extract_unicode_bytes: u64,
-    dash_work: DashBudget,
     substitutions: usize,
     color_approximations: usize,
     image_approximations: usize,
