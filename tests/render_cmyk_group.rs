@@ -787,7 +787,8 @@ fn abandoned_attempts_count_against_the_work_budgets() {
     // two paintings fit. The work of an abandoned attempt is not given
     // back.
     let doc = Document::from_bytes(&nested_groups(1, 2, "/CS /DeviceCMYK")).unwrap();
-    assert!(render_page(&doc, &doc.pages()[0], &opts()).is_err());
+    let err = render_page(&doc, &doc.pages()[0], &opts()).err().unwrap();
+    assert!(err.to_string().contains("dashed stroke"), "{err}");
     let doc = Document::from_bytes(&nested_groups(1, 2, "")).unwrap();
     assert!(render_page(&doc, &doc.pages()[0], &opts()).is_ok());
 }
@@ -974,4 +975,173 @@ fn the_colour_key_of_a_premultiplied_jpx_image_is_on_its_stored_samples() {
         );
         close(rgb(&r, 5, 5), [1.0; 3], g);
     }
+}
+
+fn page_of(
+    page_group: &str,
+    resources: &str,
+    content: &[u8],
+    extra: Vec<(u32, Vec<u8>)>,
+) -> Vec<u8> {
+    page_sized(10, page_group, resources, content, extra)
+}
+
+fn page_sized(
+    side: u32,
+    page_group: &str,
+    resources: &str,
+    content: &[u8],
+    extra: Vec<(u32, Vec<u8>)>,
+) -> Vec<u8> {
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {side} {side}] /Contents 4 0 R {page_group} \
+                 /Resources << {resources} >> >>"
+            )
+            .into_bytes(),
+        ),
+        (4, stream_obj("", content)),
+    ];
+    objs.extend(extra);
+    build_pdf(&objs)
+}
+
+fn with_limits(pdf: &[u8], limits: Limits) -> Result<kasane_pdf::RenderedPage, kasane_pdf::Error> {
+    let doc = Document::from_bytes_with_limits(pdf, limits.clone()).unwrap();
+    render_page(
+        &doc,
+        &doc.pages()[0],
+        &RenderOptions::new().with_dpi(72.0).with_limits(limits),
+    )
+}
+
+#[test]
+fn the_page_passes_count_against_the_work_budgets() {
+    // A DeviceCMYK page drawing one form: its two passes invoke it twice.
+    // Under max_xobject_invocations 1 that is refused (the RGB page
+    // renders), under 2 it renders in CMYK.
+    let mk = |g: &str| {
+        page_of(
+            g,
+            "/XObject << /F 5 0 R >>",
+            b"/F Do",
+            vec![(
+                5,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 10 10]",
+                    b"0 0 0 0.5 k 0 0 10 10 re f",
+                ),
+            )],
+        )
+    };
+    let l = |n| Limits::default().with_max_xobject_invocations(n);
+    assert!(with_limits(&mk(""), l(1)).is_ok());
+    let err = with_limits(&mk(CMYK_PAGE), l(1)).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            kasane_pdf::Error::LimitExceeded {
+                limit: "max_xobject_invocations",
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    let r = with_limits(&mk(CMYK_PAGE), l(2)).unwrap();
+    assert!(r.color_approximations().is_empty());
+    // Abandoned in the first pass (Hue after the form) and painted in
+    // RGB: two.
+    let mk_hue = |g: &str| {
+        page_of(
+            g,
+            "/XObject << /F 5 0 R >> /ExtGState << /H << /BM /Hue >> >>",
+            b"/F Do /H gs 0 0 1 1 re f",
+            vec![(
+                5,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 10 10]",
+                    b"0 0 0 0.5 k 0 0 10 10 re f",
+                ),
+            )],
+        )
+    };
+    assert!(with_limits(&mk_hue(""), l(1)).is_ok());
+    assert!(with_limits(&mk_hue(CMYK_PAGE), l(1)).is_err());
+    let r = with_limits(&mk_hue(CMYK_PAGE), l(2)).unwrap();
+    assert!(!r.color_approximations().is_empty());
+}
+
+#[test]
+fn a_tiling_texture_refused_for_the_passes_buffer_goes_to_rgb() {
+    // 10 000 one-point cells on a 100-point page: the periodic texture
+    // fits beside the page
+    // and one layer (RGB), not beside the passes' two. Painting the cells
+    // one by one instead would meet max_pattern_tiles: the page is
+    // painted in RGB (reported), exactly as without the group space.
+    let mk = |g: &str| {
+        page_sized(
+            100,
+            g,
+            "/Pattern << /P 5 0 R >>",
+            b"/Pattern cs /P scn 0 0 100 100 re f",
+            vec![(
+                5,
+                stream_obj(
+                    "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 1 1] /XStep 1 /YStep 1 /Resources << >>",
+                    b"0 0 0 1 k 0 0 1 1 re f",
+                ),
+            )],
+        )
+    };
+    let page = 100 * 100 * 4;
+    let mut found = false;
+    for b in (page..5 * page).step_by(page as usize / 8) {
+        let l = Limits::default()
+            .with_max_pattern_tiles(16)
+            .with_max_render_buffer_bytes(b);
+        let (a, z) = (
+            with_limits(&mk(CMYK_PAGE), l.clone()),
+            with_limits(&mk(""), l),
+        );
+        match (a, z) {
+            (Ok(a), Ok(z)) => {
+                if !a.color_approximations().is_empty() {
+                    found = true;
+                    assert_eq!(a.pixmap().data(), z.pixmap().data(), "{b}");
+                }
+            }
+            (Err(a), Err(z)) => assert_eq!(a.to_string(), z.to_string(), "{b}"),
+            (a, z) => panic!("{b}: CMYK {:?} vs RGB {:?}", a.err(), z.err()),
+        }
+    }
+    assert!(found, "no budget sends the page to RGB");
+}
+
+#[test]
+fn a_work_limit_reading_a_group_space_is_not_an_unreadable_space() {
+    // The page group's /CS is an ICCBased stream larger than the
+    // decoded-bytes budget: refused for that limit, not blended in RGB as
+    // if the /CS could not be read.
+    let icc = vec![b'0'; 4000];
+    let pdf = page_of(
+        "/Group << /S /Transparency /CS [/ICCBased 5 0 R] >>",
+        "",
+        b"0 0 0 1 k 0 0 10 10 re f",
+        vec![(5, stream_obj("/N 4 /Alternate /DeviceCMYK", &icc))],
+    );
+    let err = with_limits(&pdf, Limits::default().with_max_total_decoded_bytes(2000)).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            kasane_pdf::Error::LimitExceeded {
+                limit: "max_total_decoded_bytes",
+                ..
+            }
+        ),
+        "{err:?}"
+    );
 }

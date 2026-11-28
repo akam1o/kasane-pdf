@@ -572,6 +572,10 @@ pub fn render_page(
         .cloned()
         .unwrap_or(Object::Dict(Default::default()));
     let oc = crate::optcontent::OcConfig::from_catalog(doc)?;
+    // The work budgets one render may spend, carried from one painting of
+    // the page to the next (the DeviceCMYK passes, the RGB painting after
+    // abandoned ones): every painting counts.
+    let work = std::cell::RefCell::new(PageWork::default());
     // One painting of the page — content, then annotation appearance
     // streams *over* it in /Annots order (§12.5.5), each under a fresh
     // graphics state — for `target`, with `live_bytes` of other buffers
@@ -599,12 +603,12 @@ pub fn render_page(
             xobject_stack: Vec::new(),
             text_tm: Matrix::IDENTITY,
             text_tlm: Matrix::IDENTITY,
-            text_codes: 0,
+            text_codes: work.borrow().text_codes,
             extract: None,
             annot_spans: Vec::new(),
             annot_hidden: Vec::new(),
             annot_recovered: Vec::new(),
-            extract_unicode_bytes: 0,
+            extract_unicode_bytes: work.borrow().extract_unicode_bytes,
             extraction_only: false,
             glyph_bounds: true,
             substitutions: Vec::new(),
@@ -619,12 +623,12 @@ pub fn render_page(
             cmyk_fallback: None,
             cmyk_suppressed: 0,
             mask_bytes: Rc::default(),
-            dash_work: DashBudget::default(),
+            dash_work: work.borrow().dash_work.clone(),
             pattern_base: Matrix::IDENTITY,
             pattern_depth: 0,
             type3_depth: 0,
             pattern_stack: Vec::new(),
-            pattern_tiles: 0,
+            pattern_tiles: work.borrow().pattern_tiles,
             uncolored_depth: 0,
             texel_scale: 1.0,
             device_to_target: Transform::identity(),
@@ -633,12 +637,20 @@ pub fn render_page(
             mc_stack: Vec::new(),
             hidden: 0,
         };
+        renderer.xobject_invocations = work.borrow().xobject_invocations;
         renderer.cmyk_suppressed = u32::from(suppressed);
         let r = renderer.repaint_colors().and_then(|()| {
             renderer.run(&ops)?;
             let page_resources = renderer.resources.clone();
             renderer.draw_annotations(page, &page_resources)
         });
+        *work.borrow_mut() = PageWork {
+            xobject_invocations: renderer.xobject_invocations,
+            text_codes: renderer.text_codes,
+            pattern_tiles: renderer.pattern_tiles,
+            extract_unicode_bytes: renderer.extract_unicode_bytes,
+            dash_work: renderer.dash_work.clone(),
+        };
         let mut fallback = renderer.cmyk_fallback.take();
         if fallback.is_none() && target != PaintTarget::Rgb && is_buffer_budget(&r) {
             // The other pass's page buffer is alive: what fits in RGB may
@@ -665,7 +677,7 @@ pub fn render_page(
     // passes cannot paint, or the buffer budget reached in them → the
     // whole page in RGB, as before, reported; another limit fails it.
     let mut reports = None;
-    if let Some(cmyk) = page_group_cmyk(doc, page, &resources, limits) {
+    if let Some(cmyk) = page_group_cmyk(doc, page, &resources, limits)? {
         let start = doc.work_mark();
         let why = if let Err(why) = &cmyk {
             Some(why.to_string())
@@ -758,6 +770,16 @@ pub fn render_page(
     })
 }
 
+/// The work budgets spent by the paintings of one page so far.
+#[derive(Default)]
+struct PageWork {
+    xobject_invocations: u64,
+    text_codes: u64,
+    pattern_tiles: u64,
+    extract_unicode_bytes: u64,
+    dash_work: DashBudget,
+}
+
 /// What one painting of a page reports (`render_page`).
 struct PageReports {
     font_substitutions: Vec<crate::fontsubst::FontSubstitution>,
@@ -785,34 +807,55 @@ fn composite_on_white(pixmap: &mut Pixmap) {
 /// blended in RGB and reported (a knockout page group: its objects are
 /// not composited against the group's initial backdrop here). `None`
 /// otherwise — also when the /Group or /CS cannot be read, which keeps
-/// the page in RGB, as the page group's /CS was before it was read.
+/// the page in RGB, as the page group's /CS was before it was read. A
+/// work limit reached while reading them is an error (`Err` outside).
+#[allow(clippy::type_complexity)]
 fn page_group_cmyk(
     doc: &Document,
     page: &Page,
     resources: &Object,
     limits: &Limits,
-) -> Option<Result<Option<String>, &'static str>> {
-    let g = page_dict_entry(doc, page, b"Group").ok()??;
-    let g = doc.deref(&g).ok()?;
-    let gd = g.as_dict()?;
+) -> Result<Option<Result<Option<String>, &'static str>>, Error> {
+    // An error that is a work limit propagates; any other reads as
+    // "not readable": `None`.
+    fn read<T>(r: Result<T, Error>) -> Result<Option<T>, Error> {
+        match r {
+            Ok(v) => Ok(Some(v)),
+            Err(e @ Error::LimitExceeded { .. }) => Err(e),
+            Err(_) => Ok(None),
+        }
+    }
+    let Some(Some(g)) = read(page_dict_entry(doc, page, b"Group"))? else {
+        return Ok(None);
+    };
+    let Some(g) = read(doc.deref(&g))? else {
+        return Ok(None);
+    };
+    let Some(gd) = g.as_dict() else {
+        return Ok(None);
+    };
     if gd.get(b"S".as_slice()).and_then(|o| o.as_name()) != Some(b"Transparency".as_slice()) {
-        return None;
+        return Ok(None);
     }
-    let cs = gd.get(b"CS".as_slice())?;
-    let cs = ColorSpace::parse(doc, cs, resources, limits).ok()?;
+    let Some(cs) = gd.get(b"CS".as_slice()) else {
+        return Ok(None);
+    };
+    let Some(cs) = read(ColorSpace::parse(doc, cs, resources, limits))? else {
+        return Ok(None);
+    };
     if !is_cmyk_blend_space(&cs) {
-        return None;
+        return Ok(None);
     }
-    let knockout = gd
-        .get(b"K".as_slice())
-        .and_then(|o| doc.deref(o).ok())
-        .and_then(|o| o.as_bool());
-    Some(if knockout == Some(true) {
+    let knockout = match gd.get(b"K".as_slice()) {
+        Some(o) => read(doc.deref(o))?.and_then(|o| o.as_bool()),
+        None => None,
+    };
+    Ok(Some(if knockout == Some(true) {
         Err("a knockout page group")
     } else {
         // An ICCBased space blended through its alternate.
         Ok(cs.approximation())
-    })
+    }))
 }
 
 /// Encode a rendered pixmap as PNG bytes (RGBA8).
@@ -4230,8 +4273,12 @@ impl<'a> Renderer<'a> {
     /// A /CS that cannot be read is another space: the group blends in
     /// RGB, as when /CS was not read at all.
     fn blend_space(&mut self, cs: &Object) -> Result<BlendSpace, Error> {
-        let Ok(cs) = ColorSpace::parse(self.doc, cs, &self.resources, self.limits) else {
-            return Ok(BlendSpace::Other);
+        let cs = match ColorSpace::parse(self.doc, cs, &self.resources, self.limits) {
+            Ok(cs) => cs,
+            // A work limit (decoded bytes, references) is not an
+            // unreadable /CS: it ends the render, as anywhere else.
+            Err(e @ Error::LimitExceeded { .. }) => return Err(e),
+            Err(_) => return Ok(BlendSpace::Other),
         };
         Ok(if is_cmyk_blend_space(&cs) {
             // An ICCBased space blended through its alternate.
@@ -7361,8 +7408,21 @@ impl<'a> Renderer<'a> {
             && (wrapped == 1.0
                 || (self.gs.blend_mode == tiny_skia::BlendMode::SourceOver
                     && !resources_may_blend(self.doc, &tp.resources))))
-        .then(|| self.texture_plan(cell_w, cell_h))
-        .flatten();
+        .then(|| self.texture_plan(cell_w, cell_h));
+        if matches!(texture, Some(None))
+            && self.paint_target != PaintTarget::Rgb
+            && self.texture_plan_unbudgeted(cell_w, cell_h)
+        {
+            // The texture is refused only for the buffer budget, which
+            // the passes' extra layer takes: painting the cells one by one
+            // instead would be another rendering than the RGB one. The
+            // region goes to RGB (`is_buffer_budget`).
+            return Err(Error::LimitExceeded {
+                limit: "max_render_buffer_bytes",
+                max: self.limits.max_render_buffer_bytes,
+            });
+        }
+        let texture = texture.flatten();
         let direct = texture.is_none();
         {
             let n = if direct { tiles as u64 } else { wrapped as u64 };
@@ -7660,7 +7720,17 @@ impl<'a> Renderer<'a> {
     /// [`TEXTURE_MIN`] pixels each way; `None` when its texels exceed
     /// [`TEXTURE_MAX_TEXELS`] or the render's buffer budget (the tiles
     /// are then executed one by one).
+    /// Whether `texture_plan` would give a texture with no buffer
+    /// budget.
+    fn texture_plan_unbudgeted(&self, cell_w: f32, cell_h: f32) -> bool {
+        self.texture_plan_within(cell_w, cell_h, u64::MAX).is_some()
+    }
+
     fn texture_plan(&self, cell_w: f32, cell_h: f32) -> Option<TexturePlan> {
+        self.texture_plan_within(cell_w, cell_h, self.limits.max_render_buffer_bytes)
+    }
+
+    fn texture_plan_within(&self, cell_w: f32, cell_h: f32, budget: u64) -> Option<TexturePlan> {
         let area = cell_w as f64 * cell_h as f64;
         let scale = if self.texel_scale > 1.0 {
             1.0
@@ -7680,9 +7750,7 @@ impl<'a> Renderer<'a> {
         }
         let bytes = texture_bytes(width, height);
         let page = self.pixmap.width() as u64 * self.pixmap.height() as u64 * 4;
-        if self.layer_bytes.saturating_add(page).saturating_add(bytes)
-            > self.limits.max_render_buffer_bytes
-        {
+        if self.layer_bytes.saturating_add(page).saturating_add(bytes) > budget {
             return None;
         }
         Some(TexturePlan { width, height })
