@@ -5405,12 +5405,18 @@ impl<'a> Renderer<'a> {
         // Table 87 / §11.6.4.3: a soft mask — /SMask, or one in the JPX
         // data (/SMaskInData ≠ 0) — overrides the image's /Mask entry;
         // a colour key then masks nothing.
-        // An /SMask that resolves to null is no soft mask.
-        let smask = match dict.get(b"SMask".as_slice()) {
-            Some(o) => !matches!(self.doc.deref(o)?, Object::Null),
-            None => false,
+        // The image's /SMask, resolved once — not read at all when the
+        // JPX data carries the soft mask (/SMask is then ignored, Table
+        // 87). Only a stream is a soft mask: null (an undefined object
+        // too) is none, and another value is refused or, recovering,
+        // ignored by `decode_soft_mask`.
+        let embedded_alpha = jpx.is_some() && smask_in_data != 0;
+        let smask_obj = match dict.get(b"SMask".as_slice()) {
+            Some(o) if !embedded_alpha => Some(self.doc.deref(o)?),
+            _ => None,
         };
-        let soft_mask_overrides = smask || (jpx.is_some() && smask_in_data != 0);
+        let soft_mask_overrides =
+            embedded_alpha || smask_obj.as_ref().is_some_and(|o| o.as_stream().is_some());
         let color_key: Option<Vec<(u32, u32)>> = match &mask_entry {
             Some(Object::Array(_)) if soft_mask_overrides => None,
             Some(Object::Array(a)) => {
@@ -5498,7 +5504,7 @@ impl<'a> Renderer<'a> {
         {
             // §11.6.5.3: without AIS an image's soft mask is opacity,
             // which a knockout shape pass leaves out.
-        } else if let Some(sm) = dict.get(b"SMask".as_slice()) {
+        } else if let Some(sm) = smask_obj.as_ref() {
             // §11.6.5.3: the image and its soft mask are each mapped to
             // the unit square; their sample grids are independent. A
             // mask finer than the image is therefore composited at the

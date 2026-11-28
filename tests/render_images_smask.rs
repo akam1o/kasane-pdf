@@ -157,6 +157,17 @@ fn smask_overrides_a_colour_key() {
         .unwrap();
         assert_eq!(px(&r, 20, 60), WHITE, "{target}");
     }
+    // Recovering, an /SMask that is not a stream is ignored (no soft
+    // mask): the colour key applies.
+    let pdf = page(
+        b"q 40 0 0 40 10 10 cm /Im Do Q",
+        &[("Im", 5)],
+        "",
+        vec![(5, rgb_image(2, 2, &red, &format!("/SMask /None {key}")))],
+    );
+    let doc = Document::from_bytes_recovering(&pdf).unwrap();
+    let r = render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap();
+    assert_eq!(px(&r, 20, 60), WHITE);
 }
 
 #[test]
