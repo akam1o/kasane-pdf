@@ -5606,8 +5606,8 @@ impl<'a> Renderer<'a> {
     /// image (no more samples than pixels drawn — never fewer than the
     /// image's own) and falling back to `w × h` when the larger grid
     /// would exceed the image limits.
+    /// `sm`: the image's /SMask, resolved.
     fn soft_mask_grid(&self, sm: &Object, w: usize, h: usize) -> Result<(usize, usize), Error> {
-        let sm = self.doc.deref(sm)?;
         let Some((sd, _)) = sm.as_stream() else {
             return Ok((w, h));
         };
@@ -5639,8 +5639,8 @@ impl<'a> Renderer<'a> {
     /// plane (0–255), nearest-resampled when the mask's own size
     /// differs. The mask must be a one-component image; `/Matte`
     /// (pre-blended colour) is refused rather than approximated.
-    fn decode_soft_mask(&mut self, obj: &Object, w: usize, h: usize) -> Result<Vec<u8>, Error> {
-        let sm = self.doc.deref(obj)?;
+    /// `sm`: the image's /SMask, resolved.
+    fn decode_soft_mask(&mut self, sm: &Object, w: usize, h: usize) -> Result<Vec<u8>, Error> {
         if matches!(sm, Object::Null) {
             // No soft mask (a reference to an undefined object is null,
             // §7.3.10): fully opaque.

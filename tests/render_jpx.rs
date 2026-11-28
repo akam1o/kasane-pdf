@@ -268,10 +268,17 @@ fn a_soft_mask_overrides_a_colour_key() {
     let r = render(&grey_pm_page(&format!("/ColorSpace /DeviceRGB {key}"))).unwrap();
     assert_eq!(px(&r, 5, 95), (255, 255, 255));
     // With /SMaskInData ≠ 0 an /SMask is ignored (Table 87), not even
-    // read: one that names nothing usable does not fail the image.
-    let r = render(&grey_pm_page(
-        "/ColorSpace /DeviceRGB /SMaskInData 2 /SMask (not a stream)",
-    ))
-    .unwrap();
+    // resolved: a reference to an undefined object is not looked up
+    // (no warning), and the image renders.
+    let pdf = grey_pm_page("/ColorSpace /DeviceRGB /SMaskInData 2 /SMask 99 0 R");
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let r = render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap();
     assert!(px(&r, 5, 95).0 < 250);
+    assert!(
+        !doc.warnings()
+            .iter()
+            .any(|w| matches!(w, kasane_pdf::Warning::UndefinedReference { .. })),
+        "{:?}",
+        doc.warnings()
+    );
 }
