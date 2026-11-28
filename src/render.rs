@@ -4430,10 +4430,14 @@ impl<'a> Renderer<'a> {
         self.cmyk_regions += 1;
         let mut layers = Vec::with_capacity(2);
         let mut failure = None;
+        let mut error = None;
         for target in [PaintTarget::CmykCmy, PaintTarget::CmykK] {
-            let mut layer = Pixmap::new(w, h).ok_or_else(|| {
-                Error::Structure("cannot allocate transparency-group layer".into())
-            })?;
+            let Some(mut layer) = Pixmap::new(w, h) else {
+                error = Some(Error::Structure(
+                    "cannot allocate transparency-group layer".into(),
+                ));
+                break;
+            };
             self.gs = saved.0.clone();
             self.gs_stack.truncate(saved.1);
             self.reset_interp(&interp);
@@ -4465,9 +4469,8 @@ impl<'a> Renderer<'a> {
                     break;
                 }
                 Err(e) => {
-                    self.cmyk_regions -= 1;
-                    self.cmyk_fallback = outer;
-                    return Err(e);
+                    error = Some(e);
+                    break;
                 }
             }
             if after_first.is_none() {
@@ -4480,6 +4483,12 @@ impl<'a> Renderer<'a> {
         self.gs = saved.0;
         self.gs_stack.truncate(saved.1);
         self.reset_interp(&interp);
+        if let Some(e) = error {
+            // Not a reason to paint in RGB: the render fails, from the
+            // state the passes started from.
+            self.reset_work(&start);
+            return Err(e);
+        }
         if failure.is_none() {
             let k = layers.pop().expect("two passes");
             let mut cmy = layers.pop().expect("two passes");
