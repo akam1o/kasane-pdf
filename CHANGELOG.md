@@ -56,6 +56,13 @@ versions follow [Semantic Versioning](https://semver.org/).
   still counts as hidden. (#85)
 
 ### Fixed
+- Rendering: a JPX image with `/SMaskInData 2` had its colours divided
+  by their alpha after the conversion to RGB, which is right only for
+  spaces that convert as the identity; they are now divided in the
+  image's own colour space, before it (Table 87, §7.4.9).
+- Rendering: a colour-key `/Mask` array masked an image that also has a
+  soft mask (`/SMask`, or `/SMaskInData` ≠ 0); the soft mask now
+  overrides it, as Table 87 and §11.6.4.3 require.
 - `redact` refused long documents with Type 3 fonts with
   `max_diag_exec_ops`: the walk that finds which Type 3 glyphs the input
   and the output show counted the operations of every page against the
