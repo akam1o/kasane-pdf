@@ -892,6 +892,10 @@ struct BlendScan<'a> {
     seen: std::collections::HashSet<IndirectRef>,
     budget: usize,
     exhausted: bool,
+    /// A document work limit reached while resolving (decoded bytes,
+    /// references): the scan stops as exhausted and keeps the error for
+    /// a caller that must not treat it as an unreadable entry.
+    limit: Option<Error>,
 }
 impl BlendScan<'_> {
     /// Resolve `o`, charging the budget; `None` for an object seen
@@ -913,6 +917,11 @@ impl BlendScan<'_> {
         match self.doc.deref_defined(o) {
             Ok(v) => Some(v),
             Err(Error::MissingReference(_)) => Some(Object::Null),
+            Err(e @ Error::LimitExceeded { .. }) => {
+                self.exhausted = true;
+                self.limit.get_or_insert(e);
+                None
+            }
             Err(_) => None,
         }
     }
@@ -975,15 +984,23 @@ impl BlendScan<'_> {
 }
 
 /// Whether a non-Normal blend mode is reachable from resources `res`
-/// (a tiling cell's): as `page_may_blend`, within the same budget.
-fn resources_may_blend(doc: &Document, res: &Object) -> bool {
+/// (a tiling cell's): as `page_may_blend`, within the same budget. A
+/// document work limit reached on the way is an error, not an answer:
+/// the scan decides how cells are painted, which must not depend on
+/// what an earlier painting left in the document's budgets.
+fn resources_may_blend(doc: &Document, res: &Object) -> Result<bool, Error> {
     let mut scan = BlendScan {
         doc,
         seen: std::collections::HashSet::new(),
         budget: BLEND_SCAN_BUDGET,
         exhausted: false,
+        limit: None,
     };
-    scan.resources(res)
+    let r = scan.resources(res);
+    match scan.limit {
+        Some(e) => Err(e),
+        None => Ok(r),
+    }
 }
 
 /// Whether anything on `page` can be painted with a blend mode other
@@ -1000,6 +1017,7 @@ fn page_may_blend(doc: &Document, page: &Page) -> bool {
         seen: std::collections::HashSet::new(),
         budget: BLEND_SCAN_BUDGET,
         exhausted: false,
+        limit: None,
     };
     if let Some(res) = page.resources() {
         if scan.resources(res) {
@@ -7399,7 +7417,7 @@ impl<'a> Renderer<'a> {
         // (source-over, which the texture uses, composes either way).
         let wrapped =
             tiling_reach(bb.urx - bb.llx, tp.xstep) * tiling_reach(bb.ury - bb.lly, tp.ystep);
-        let texture = (cell_w.is_finite()
+        let eligible = cell_w.is_finite()
             && cell_h.is_finite()
             && cell_w >= 1e-3
             && cell_h >= 1e-3
@@ -7407,10 +7425,12 @@ impl<'a> Renderer<'a> {
             && wrapped < tiles
             && (wrapped == 1.0
                 || (self.gs.blend_mode == tiny_skia::BlendMode::SourceOver
-                    && !resources_may_blend(self.doc, &tp.resources))))
-        .then(|| self.texture_plan(cell_w, cell_h));
+                    && !resources_may_blend(self.doc, &tp.resources)?));
+        let texture = eligible.then(|| self.texture_plan(cell_w, cell_h));
+        // Inside a DeviceCMYK region — in its passes, or in a soft mask
+        // computed in one (painted in RGB, the passes' layers still live).
         if matches!(texture, Some(None))
-            && self.paint_target != PaintTarget::Rgb
+            && self.cmyk_regions > 0
             && self.texture_plan_unbudgeted(cell_w, cell_h)
         {
             // The texture is refused only for the buffer budget, which

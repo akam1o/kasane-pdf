@@ -1145,3 +1145,200 @@ fn a_work_limit_reading_a_group_space_is_not_an_unreadable_space() {
         "{err:?}"
     );
 }
+
+#[test]
+fn a_tiling_in_a_soft_mask_inside_the_passes() {
+    // A DeviceCMYK page whose luminosity mask's group fills with a
+    // 10 000-cell tiling: the mask is painted in RGB, but the passes'
+    // layers are alive. At every buffer budget the page is the CMYK
+    // result, the RGB one with a note, or refused as the RGB page is.
+    let mk = |g: &str| {
+        page_sized(
+            100,
+            g,
+            "/ExtGState << /M << /SMask << /S /Luminosity /G 5 0 R >> >> >>",
+            b"/M gs 0 0 0 1 k 0 0 100 100 re f",
+            vec![
+                (
+                    5,
+                    stream_obj(
+                        "/Type /XObject /Subtype /Form /BBox [0 0 100 100] \
+                         /Group << /S /Transparency /CS /DeviceGray >> /Resources << /Pattern << /P 6 0 R >> >>",
+                        b"/Pattern cs /P scn 0 0 100 100 re f",
+                    ),
+                ),
+                (
+                    6,
+                    stream_obj(
+                        "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 1 1] /XStep 1 /YStep 1 /Resources << >>",
+                        b"1 g 0 0 1 1 re f",
+                    ),
+                ),
+            ],
+        )
+    };
+    let page = 100 * 100 * 4;
+    let full = with_limits(&mk(CMYK_PAGE), Limits::default().with_max_pattern_tiles(16)).unwrap();
+    let mut seen = (false, false);
+    for b in (page..7 * page).step_by(page as usize / 8) {
+        let l = Limits::default()
+            .with_max_pattern_tiles(16)
+            .with_max_render_buffer_bytes(b);
+        match (
+            with_limits(&mk(CMYK_PAGE), l.clone()),
+            with_limits(&mk(""), l),
+        ) {
+            (Ok(a), Ok(z)) => {
+                if a.color_approximations().is_empty() {
+                    seen.0 = true;
+                    assert_eq!(a.pixmap().data(), full.pixmap().data(), "{b}");
+                } else {
+                    seen.1 = true;
+                    assert_eq!(a.pixmap().data(), z.pixmap().data(), "{b}");
+                }
+            }
+            (Err(a), Err(z)) => assert_eq!(a.to_string(), z.to_string(), "{b}"),
+            (a, z) => panic!("{b}: CMYK {:?} vs RGB {:?}", a.err(), z.err()),
+        }
+    }
+    assert_eq!(seen, (true, true));
+}
+
+/// A PDF whose objects 1..=5 are `objs`' bodies (plain) and whose
+/// object 6 is `compressed` inside an object stream (object 7, padded
+/// with `pad` bytes, so that decoding it costs decoded bytes), with a
+/// cross-reference stream (object 8).
+fn with_object_stream(objs: &[Vec<u8>], compressed: &[u8], pad: usize) -> Vec<u8> {
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offs = Vec::new();
+    for (i, body) in objs.iter().enumerate() {
+        offs.push(out.len());
+        out.extend(format!("{} 0 obj\n", i + 1).as_bytes());
+        out.extend(body);
+        out.extend(b"\nendobj\n");
+    }
+    let header = b"6 0 ";
+    let mut data = header.to_vec();
+    data.extend(compressed);
+    data.extend(b" ");
+    data.extend(vec![b' '; pad]);
+    let os_off = out.len();
+    out.extend(
+        format!(
+            "7 0 obj\n<< /Type /ObjStm /N 1 /First {} /Length {} >>\nstream\n",
+            header.len(),
+            data.len()
+        )
+        .as_bytes(),
+    );
+    out.extend(&data);
+    out.extend(b"\nendstream\nendobj\n");
+    let x_off = out.len();
+    let mut rows = vec![[0u8, 0, 0, 0, 0, 0xff, 0xff]];
+    for o in &offs {
+        let o = *o as u32;
+        rows.push([
+            1,
+            (o >> 24) as u8,
+            (o >> 16) as u8,
+            (o >> 8) as u8,
+            o as u8,
+            0,
+            0,
+        ]);
+    }
+    rows.push([2, 0, 0, 0, 7, 0, 0]);
+    let o = os_off as u32;
+    rows.push([
+        1,
+        (o >> 24) as u8,
+        (o >> 16) as u8,
+        (o >> 8) as u8,
+        o as u8,
+        0,
+        0,
+    ]);
+    let o = x_off as u32;
+    rows.push([
+        1,
+        (o >> 24) as u8,
+        (o >> 16) as u8,
+        (o >> 8) as u8,
+        o as u8,
+        0,
+        0,
+    ]);
+    let xs: Vec<u8> = rows.concat();
+    out.extend(
+        format!(
+            "8 0 obj\n<< /Type /XRef /Size 9 /W [1 4 2] /Root 1 0 R /Length {} >>\nstream\n",
+            xs.len()
+        )
+        .as_bytes(),
+    );
+    out.extend(&xs);
+    out.extend(format!("\nendstream\nendobj\nstartxref\n{x_off}\n%%EOF\n").as_bytes());
+    out
+}
+
+#[test]
+fn a_work_limit_in_the_blend_scan_is_not_a_blend() {
+    // Overlapping cells (opacity 0.4 from outside) whose resources name
+    // an /ExtGState (Multiply, not used by the cell) kept in an object
+    // stream: the scan for blend modes
+    // decodes that stream — in each pass, as caches are rolled back.
+    // Whatever max_total_decoded_bytes allows, the page is the
+    // full-budget result or refused: a scan cut short by the limit
+    // never decides how the cells are painted.
+    let mk = |g: &str| {
+        let page = format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 40 40] /Contents 4 0 R {g} \
+             /Resources << /Pattern << /P 5 0 R >> /ExtGState << /A << /ca 0.4 >> >> >> >>"
+        );
+        let content = b"/A gs /Pattern cs /P scn 0 0 40 40 re f";
+        let cell = b"0 0 0 1 k 0 0 1.5 1.5 re f";
+        with_object_stream(
+            &[
+                b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+                b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+                page.into_bytes(),
+                [format!("<< /Length {} >>\nstream\n", content.len()).as_bytes(), content, b"\nendstream"].concat(),
+                [
+                    format!(
+                        "<< /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 2 2] /XStep 1 /YStep 1 \
+                         /Resources << /ExtGState << /H 6 0 R >> >> /Length {} >>\nstream\n",
+                        cell.len()
+                    )
+                    .as_bytes(),
+                    cell,
+                    b"\nendstream",
+                ]
+                .concat(),
+            ],
+            b"<< /BM /Multiply >>",
+            4000,
+        )
+    };
+    for g in [CMYK_PAGE, ""] {
+        let full = with_limits(&mk(g), Limits::default()).unwrap();
+        let (mut ok, mut refused) = (false, false);
+        for n in (500..20_000).step_by(250) {
+            let l = Limits::default().with_max_total_decoded_bytes(n);
+            let Ok(doc) = Document::from_bytes_with_limits(&mk(g), l.clone()) else {
+                continue;
+            };
+            match render_page(
+                &doc,
+                &doc.pages()[0],
+                &RenderOptions::new().with_dpi(72.0).with_limits(l),
+            ) {
+                Ok(r) => {
+                    ok = true;
+                    assert_eq!(r.pixmap().data(), full.pixmap().data(), "{g} {n}");
+                }
+                Err(_) => refused = true,
+            }
+        }
+        assert!(ok && refused, "{g}: {ok} {refused}");
+    }
+}

@@ -114,7 +114,10 @@ are on the [roadmap](architecture.md#roadmap).
   attempt, so such a page can reach a limit the same page without the
   group colour space does not — a limit then fails the render (the
   buffer budget alone sends it to RGB, reported). A group painted in
-  RGB after its passes were abandoned starts no passes inside it. A knockout page group with a DeviceCMYK `/CS` blends in
+  RGB after its passes were abandoned starts no passes inside it.
+  A work limit reached while scanning a tiling cell's resources for
+  blend modes, or reading a group's `/CS`, fails the render (it used to
+  be read as an unreadable entry). A knockout page group with a DeviceCMYK `/CS` blends in
   RGB (reported).
 - **Text**: no hinting, no shaping (ligature substitution, kerning
   from GPOS); glyphs are placed exactly where the content stream
