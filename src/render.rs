@@ -5405,10 +5405,12 @@ impl<'a> Renderer<'a> {
         // Table 87 / §11.6.4.3: a soft mask — /SMask, or one in the JPX
         // data (/SMaskInData ≠ 0) — overrides the image's /Mask entry;
         // a colour key then masks nothing.
-        let soft_mask_overrides = dict
-            .get(b"SMask".as_slice())
-            .is_some_and(|o| !matches!(o, Object::Null))
-            || (jpx.is_some() && smask_in_data != 0);
+        // An /SMask that resolves to null is no soft mask.
+        let smask = match dict.get(b"SMask".as_slice()) {
+            Some(o) => !matches!(self.doc.deref(o)?, Object::Null),
+            None => false,
+        };
+        let soft_mask_overrides = smask || (jpx.is_some() && smask_in_data != 0);
         let color_key: Option<Vec<(u32, u32)>> = match &mask_entry {
             Some(Object::Array(_)) if soft_mask_overrides => None,
             Some(Object::Array(a)) => {

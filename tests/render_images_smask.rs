@@ -143,6 +143,20 @@ fn smask_overrides_a_colour_key() {
     );
     let r = render(&pdf).unwrap();
     assert_eq!(px(&r, 20, 60), WHITE);
+    // An /SMask that resolves to null (an object that is null, or one
+    // that is not defined) is no soft mask: the colour key applies.
+    for (target, objs) in [("6 0 R", vec![(6, b"null".to_vec())]), ("9 0 R", vec![])] {
+        let mut all = vec![(5, rgb_image(2, 2, &red, &format!("/SMask {target} {key}")))];
+        all.extend(objs);
+        let r = render(&page(
+            b"q 40 0 0 40 10 10 cm /Im Do Q",
+            &[("Im", 5)],
+            "",
+            all,
+        ))
+        .unwrap();
+        assert_eq!(px(&r, 20, 60), WHITE, "{target}");
+    }
 }
 
 #[test]
