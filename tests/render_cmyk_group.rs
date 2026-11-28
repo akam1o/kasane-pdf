@@ -275,6 +275,13 @@ fn rgb_colours_in_a_cmyk_group_under_normal_are_unchanged() {
 /// An RGB page drawing one isolated group form whose /CS is DeviceCMYK:
 /// `CB` then `CS` in `mode` inside, transparent elsewhere.
 fn form_group(mode: &str, group: &str) -> Vec<u8> {
+    form_group_with(mode, group, "")
+}
+
+/// `form_group` whose group also draws `inner` (an isolated group form
+/// painting `CS` at x 2..8, y 2..4) when given: one more layer inside.
+fn form_group_with(mode: &str, group: &str, inner: &str) -> Vec<u8> {
+    let nested = if inner.is_empty() { "" } else { " /In Do" };
     build_pdf(&[
         (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
@@ -290,14 +297,26 @@ fn form_group(mode: &str, group: &str) -> Vec<u8> {
             stream_obj(
                 &format!(
                     "/Type /XObject /Subtype /Form /BBox [0 0 30 10] /Group {group} \
-                     /Resources << /ExtGState << /GS 6 0 R >> >>"
+                     /Resources << /ExtGState << /GS 6 0 R >> /XObject << /In 7 0 R >> >>"
                 ),
-                format!("{} 0 0 10 10 re f /GS gs {} 2 2 6 6 re f", k(CB), k(CS)).as_bytes(),
+                format!(
+                    "{} 0 0 10 10 re f /GS gs {} 2 2 6 6 re f{nested}",
+                    k(CB),
+                    k(CS)
+                )
+                .as_bytes(),
             ),
         ),
         (
             6,
             format!("<< /Type /ExtGState /BM /{mode} >>").into_bytes(),
+        ),
+        (
+            7,
+            stream_obj(
+                &format!("/Type /XObject /Subtype /Form /BBox [0 0 30 10] /Group {inner}"),
+                format!("{} 2 2 6 2 re f", k(CS)).as_bytes(),
+            ),
         ),
     ])
 }
@@ -548,5 +567,234 @@ fn colours_set_before_the_group_and_fresh_states_inside_it() {
             "{:?}",
             r.color_approximations()
         );
+    }
+}
+
+#[test]
+fn the_page_group_is_converted_before_it_meets_the_paper() {
+    // §11.4.7: the page group composites against transparency; its
+    // result is converted and only then put on white. Black ink with
+    // cyan, (1, 0, 0, 1), at opacity 0.5: converted it is black at 0.5,
+    // grey on white — flattened on white first, the cyan would clip to
+    // (0, .5, .5) instead.
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Contents 4 0 R {CMYK_PAGE} \
+                 /Resources << /ExtGState << /H << /ca 0.5 >> >> >> >>"
+            )
+            .into_bytes(),
+        ),
+        (4, stream_obj("", b"/H gs 1 0 0 1 k 0 0 10 10 re f")),
+    ]);
+    let r = render(pdf, &opts());
+    close(rgb(&r, 5, 5), [0.5; 3], "half-opaque black ink");
+}
+
+#[test]
+fn a_knockout_page_group_and_an_unreadable_cs() {
+    let note = |r: &kasane_pdf::RenderedPage| {
+        r.color_approximations()
+            .iter()
+            .any(|a| a.contains("knockout page group"))
+    };
+    let ko = "/Group << /S /Transparency /K true /CS /DeviceCMYK >>";
+    let a = render(page("Screen", ko), &opts());
+    let b = render(
+        page("Screen", "/Group << /S /Transparency /K true >>"),
+        &opts(),
+    );
+    assert_eq!(a.pixmap().data(), b.pixmap().data());
+    assert!(note(&a), "{:?}", a.color_approximations());
+    // A non-isolated group's /CS is not read (Table 147), even when it
+    // names no colour space; an isolated group's unreadable /CS blends
+    // in RGB, as before.
+    for inner in [
+        "/S /Transparency /CS /NoSuchSpace",
+        "/S /Transparency /I true /CS /NoSuchSpace",
+    ] {
+        let a = render(page_with("Screen", "", "", inner), &opts());
+        let b = render(page("Screen", ""), &opts());
+        assert_eq!(a.pixmap().data(), b.pixmap().data(), "{inner}");
+    }
+}
+
+#[test]
+fn the_passes_cost_the_budgets_one_painting() {
+    // An isolated DeviceCMYK group drawing one inner form, under a
+    // max_xobject_invocations that one painting of the page needs
+    // exactly: blended in CMYK, not refused — and with a non-separable
+    // mode inside, painted in RGB under the same limit, not refused.
+    let mk = |mode: &str| {
+        build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Contents 4 0 R \
+                  /Resources << /XObject << /G 5 0 R >> >> >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", b"/G Do")),
+            (
+                5,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 10 10] \
+                     /Group << /S /Transparency /I true /CS /DeviceCMYK >> \
+                     /Resources << /XObject << /In 6 0 R >> /ExtGState << /GS 7 0 R >> >>",
+                    format!("{} 0 0 10 10 re f /GS gs /In Do", k(CB)).as_bytes(),
+                ),
+            ),
+            (
+                6,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 10 10]",
+                    format!("{} 0 0 10 10 re f", k(CS)).as_bytes(),
+                ),
+            ),
+            (7, format!("<< /BM /{mode} >>").into_bytes()),
+        ])
+    };
+    let tight = RenderOptions::new()
+        .with_dpi(72.0)
+        .with_limits(Limits::default().with_max_xobject_invocations(2));
+    let r = render(mk("Screen"), &tight);
+    close(
+        rgb(&r, 5, 5),
+        cmyk_to_rgb(blend_cmyk("Screen", CB, CS)),
+        "Screen",
+    );
+    assert!(
+        r.color_approximations().is_empty(),
+        "{:?}",
+        r.color_approximations()
+    );
+    let r = render(mk("Hue"), &tight);
+    assert!(!r.color_approximations().is_empty());
+}
+
+#[test]
+fn every_buffer_budget_gives_the_cmyk_result_or_the_reported_rgb_one() {
+    // Whatever max_render_buffer_bytes allows, the page is the CMYK
+    // result with no note, the RGB one with a note, or refused exactly
+    // as the RGB page is — never a mixture of the two.
+    let full = render(page("Screen", CMYK_PAGE), &opts());
+    let one = 30 * 10 * 4;
+    for budget in (one..=5 * one).step_by(one as usize / 4) {
+        let o = RenderOptions::new()
+            .with_dpi(72.0)
+            .with_limits(Limits::default().with_max_render_buffer_bytes(budget));
+        let doc = Document::from_bytes(&page("Screen", CMYK_PAGE)).unwrap();
+        let rgb_doc = Document::from_bytes(&page("Screen", "")).unwrap();
+        match (
+            render_page(&doc, &doc.pages()[0], &o),
+            render_page(&rgb_doc, &rgb_doc.pages()[0], &o),
+        ) {
+            (Ok(a), Ok(b)) => {
+                if a.color_approximations().is_empty() {
+                    assert_eq!(a.pixmap().data(), full.pixmap().data(), "{budget}");
+                } else {
+                    assert_eq!(a.pixmap().data(), b.pixmap().data(), "{budget}");
+                }
+            }
+            (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string(), "{budget}"),
+            (a, b) => panic!("{budget}: {:?} vs {:?}", a.is_ok(), b.is_ok()),
+        }
+    }
+}
+
+// tests/render_jpx.rs's 4 × 4 RGBA codestream (synthetic).
+const RGBA_JP2: &[u8] = b"\x00\x00\x00\x0c\x6a\x50\x20\x20\x0d\x0a\x87\x0a\x00\x00\x00\x14\x66\x74\x79\x70\x6a\x70\x32\x20\x00\x00\x00\x00\x6a\x70\x32\x20\x00\x00\x00\x2d\x6a\x70\x32\x68\x00\x00\x00\x16\x69\x68\x64\x72\x00\x00\x00\x04\x00\x00\x00\x04\x00\x04\x07\x07\x00\x00\x00\x00\x00\x0f\x63\x6f\x6c\x72\x01\x00\x00\x00\x00\x00\x10\x00\x00\x00\xb1\x6a\x70\x32\x63\xff\x4f\xff\x51\x00\x32\x00\x00\x00\x00\x00\x04\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04\x07\x01\x01\x07\x01\x01\x07\x01\x01\x07\x01\x01\xff\x52\x00\x0c\x00\x00\x00\x01\x01\x00\x04\x04\x00\x01\xff\x5c\x00\x04\x40\x40\xff\x64\x00\x25\x00\x01\x43\x72\x65\x61\x74\x65\x64\x20\x62\x79\x20\x4f\x70\x65\x6e\x4a\x50\x45\x47\x20\x76\x65\x72\x73\x69\x6f\x6e\x20\x32\x2e\x35\x2e\x34\xff\x90\x00\x0a\x00\x00\x00\x00\x00\x36\x00\x01\xff\x93\xcf\xb4\x20\x11\x50\x49\x8a\x65\x20\x00\x05\x80\xdf\x80\x20\x14\x00\x5c\xaf\xdf\x80\x90\x1c\x46\xe8\x10\xa9\xcc\x16\x20\xd9\xa0\xf1\x3a\xdf\x5b\x4b\xab\x69\x75\xff\xd9";
+
+#[test]
+fn a_premultiplied_jpx_image_in_a_cmyk_group() {
+    // /SMaskInData 2: the samples are divided by their alpha in the
+    // image's space, before they are painted for either pass: red at
+    // opacity 0.5 on white, on a DeviceCMYK page as on an RGB one.
+    for g in [CMYK_PAGE, ""] {
+        let r = render(jpx_page(g, RED_PM_JP2), &opts());
+        close(rgb(&r, 5, 5), [1.0, 0.5, 0.5], g);
+    }
+    let mk = |g: &str| jpx_page(g, RGBA_JP2);
+    let a = render(mk(CMYK_PAGE), &opts());
+    let b = render(mk(""), &opts());
+    for (x, y) in a.pixmap().data().iter().zip(b.pixmap().data()) {
+        assert!(x.abs_diff(*y) <= 1, "{x} vs {y}");
+    }
+}
+
+fn jpx_page(g: &str, jp2: &[u8]) -> Vec<u8> {
+    let side = if jp2.len() == RED_PM_JP2.len() { 8 } else { 4 };
+    {
+        let content = b"q 10 0 0 10 0 0 cm /Im Do Q";
+        let mut img = format!(
+            "<< /Type /XObject /Subtype /Image /Width {side} /Height {side} /Filter /JPXDecode \
+             /SMaskInData 2 /Length {} >>\nstream\n",
+            jp2.len()
+        )
+        .into_bytes();
+        img.extend_from_slice(jp2);
+        img.extend_from_slice(b"\nendstream");
+        build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Contents 4 0 R {g} \
+                     /Resources << /XObject << /Im 5 0 R >> >> >>"
+                )
+                .into_bytes(),
+            ),
+            (4, stream_obj("", content)),
+            (5, img),
+        ])
+    }
+}
+
+// An 8 × 8 red codestream with an alpha channel of 128 everywhere, the
+// colour premultiplied by it (/SMaskInData 2): samples (128, 0, 0).
+const RED_PM_JP2: &[u8] = b"\x00\x00\x00\x0c\x6a\x50\x20\x20\x0d\x0a\x87\x0a\x00\x00\x00\x14\x66\x74\x79\x70\x6a\x70\x32\x20\x00\x00\x00\x00\x6a\x70\x32\x20\x00\x00\x00\x2d\x6a\x70\x32\x68\x00\x00\x00\x16\x69\x68\x64\x72\x00\x00\x00\x08\x00\x00\x00\x08\x00\x04\x07\x07\x00\x00\x00\x00\x00\x0f\x63\x6f\x6c\x72\x01\x00\x00\x00\x00\x00\x10\x00\x00\x00\x9c\x6a\x70\x32\x63\xff\x4f\xff\x51\x00\x32\x00\x00\x00\x00\x00\x08\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04\x07\x01\x01\x07\x01\x01\x07\x01\x01\x07\x01\x01\xff\x52\x00\x0c\x00\x00\x00\x01\x01\x00\x04\x04\x00\x01\xff\x5c\x00\x04\x40\x40\xff\x64\x00\x25\x00\x01\x43\x72\x65\x61\x74\x65\x64\x20\x62\x79\x20\x4f\x70\x65\x6e\x4a\x50\x45\x47\x20\x76\x65\x72\x73\x69\x6f\x6e\x20\x32\x2e\x35\x2e\x34\xff\x90\x00\x0a\x00\x00\x00\x00\x00\x21\x00\x01\xff\x93\xcf\xb4\x18\x11\x50\x54\xaf\xff\x7f\x80\xdf\x80\x28\x14\x00\x5c\xa3\x6f\x80\xff\xd9";
+
+#[test]
+fn every_buffer_budget_for_a_cmyk_group_form() {
+    // As for the page: an isolated DeviceCMYK group form on an RGB page
+    // is the CMYK result with no note or the RGB one with a note, at
+    // every max_render_buffer_bytes — also with an isolated group inside
+    // it (one more layer within the passes, which may not fit beside
+    // them). Both outcomes occur in each sweep.
+    let cmyk = "<< /S /Transparency /I true /CS /DeviceCMYK >>";
+    let plain = "<< /S /Transparency /I true >>";
+    for inner in ["", plain] {
+        let full = render(form_group_with("Screen", cmyk, inner), &opts());
+        let one = 30 * 10 * 4;
+        let mut seen = (false, false);
+        for budget in (one..=5 * one).step_by(one as usize / 4) {
+            let o = RenderOptions::new()
+                .with_dpi(72.0)
+                .with_limits(Limits::default().with_max_render_buffer_bytes(budget));
+            let a = Document::from_bytes(&form_group_with("Screen", cmyk, inner)).unwrap();
+            let b = Document::from_bytes(&form_group_with("Screen", plain, inner)).unwrap();
+            match (
+                render_page(&a, &a.pages()[0], &o),
+                render_page(&b, &b.pages()[0], &o),
+            ) {
+                (Ok(a), Ok(b)) => {
+                    if a.color_approximations().is_empty() {
+                        seen.0 = true;
+                        assert_eq!(a.pixmap().data(), full.pixmap().data(), "{budget}");
+                    } else {
+                        seen.1 = true;
+                        assert_eq!(a.pixmap().data(), b.pixmap().data(), "{budget}");
+                    }
+                }
+                (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string(), "{budget}"),
+                (a, b) => panic!("{inner} {budget}: {:?} vs {:?}", a.is_ok(), b.is_ok()),
+            }
+        }
+        assert_eq!(seen, (true, true), "{inner}");
     }
 }

@@ -706,6 +706,32 @@ impl Document {
         });
     }
 
+    /// The counters an operation moves — the reference and decoded
+    /// budgets, the warnings and recoveries, the unescaped-CR count — to
+    /// put back with [`Document::reset_work`]: a painting repeated over
+    /// the same content (the passes of a DeviceCMYK group) charges them
+    /// once, as a single painting does.
+    pub(crate) fn work_mark(&self) -> WorkMark {
+        let w = self.warnings.borrow();
+        WorkMark {
+            refs: self.ref_budget.get(),
+            decoded: self.decoded_budget.get(),
+            raw_cr: self.raw_cr_object_strings.get(),
+            warnings: (w.list.clone(), w.dropped, w.recoveries),
+        }
+    }
+
+    /// Put back the counters [`Document::work_mark`] read.
+    pub(crate) fn reset_work(&self, m: &WorkMark) {
+        self.ref_budget.set(m.refs);
+        self.decoded_budget.set(m.decoded);
+        self.raw_cr_object_strings.set(m.raw_cr);
+        let mut w = self.warnings.borrow_mut();
+        w.list = m.warnings.0.clone();
+        w.dropped = m.warnings.1;
+        w.recoveries = m.warnings.2;
+    }
+
     /// What is left of the current operation's decoded-bytes budget.
     pub(crate) fn decoded_left(&self) -> u64 {
         self.decoded_budget.get()
@@ -1663,6 +1689,15 @@ impl Document {
         ));
         Ok(())
     }
+}
+
+/// Counters of a document read by [`Document::work_mark`].
+#[derive(Clone)]
+pub(crate) struct WorkMark {
+    refs: u64,
+    decoded: u64,
+    raw_cr: u64,
+    warnings: (Vec<crate::Warning>, u64, u64),
 }
 
 /// Guard returned by [`Document::decoded_budget_scope`].

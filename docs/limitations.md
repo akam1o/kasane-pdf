@@ -104,7 +104,11 @@ are on the [roadmap](architecture.md#roadmap).
   `color_approximations`). A soft mask's luminosity is taken from its
   group painted in RGB, whatever the group's `/CS`. A page or group
   blending in CMYK is painted twice (twice the interpretation work and
-  one more buffer of its size).
+  one more buffer of its size): both passes get the same budgets and
+  buffer headroom, the work budgets are charged for one painting, and
+  a limit reached in a pass paints the page or group in RGB instead
+  (reported). A knockout page group with a DeviceCMYK `/CS` blends in
+  RGB (reported).
 - **Text**: no hinting, no shaping (ligature substitution, kerning
   from GPOS); glyphs are placed exactly where the content stream
   puts them.

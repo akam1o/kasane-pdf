@@ -654,43 +654,64 @@ pub fn render_page(
     };
     // §11.4.7: the page group's /CS is the blending space of the page
     // (honoured whatever /I says: a page imposed directly is isolated).
-    // DeviceCMYK: painted in two passes onto two page buffers
-    // (`PaintTarget`), combined; anything the passes cannot paint →
-    // the whole page in RGB, as before, reported.
+    // DeviceCMYK: painted in two passes (`PaintTarget`) onto two
+    // transparent page buffers, each with both buffers' headroom and the
+    // document's counters as before the first (so both take the same
+    // decisions, and the page costs its budgets one painting), combined,
+    // converted, and only then composited on white paper. Anything the
+    // passes cannot paint, or a limit reached in them → the whole page
+    // in RGB, as before, reported.
     let mut reports = None;
-    if page_group_is_cmyk(doc, page, &resources, limits) {
-        let fits = buf_bytes
+    if let Some(cmyk) = page_group_cmyk(doc, page, &resources, limits) {
+        let start = doc.work_mark();
+        let why = if let Err(why) = &cmyk {
+            Some(why.to_string())
+        } else if !buf_bytes
             .checked_mul(2)
-            .is_some_and(|b| b <= limits.max_render_buffer_bytes);
-        let why = if fits {
-            let (r1, f1) = paint(&mut pixmap, PaintTarget::CmykCmy, 0)?;
-            match f1 {
-                Some(why) => Some(why),
-                None => {
+            .is_some_and(|b| b <= limits.max_render_buffer_bytes)
+        {
+            Some("buffers over max_render_buffer_bytes".to_string())
+        } else {
+            let pass = |pixmap: &mut Pixmap, target| match paint(pixmap, target, buf_bytes) {
+                Ok((r, None)) => Ok(Ok(r)),
+                Ok((_, Some(why))) => Ok(Err(why)),
+                Err(Error::LimitExceeded { limit, .. }) => {
+                    Ok(Err(format!("{limit} reached in its passes")))
+                }
+                Err(e) => Err(e),
+            };
+            pixmap.fill(tiny_skia::Color::TRANSPARENT);
+            match pass(&mut pixmap, PaintTarget::CmykCmy)? {
+                Err(why) => Some(why),
+                Ok(r1) => {
+                    let after_first = doc.work_mark();
+                    doc.reset_work(&start);
                     let mut k = Pixmap::new(width, height).ok_or_else(|| {
                         Error::Structure(format!("cannot allocate {width}x{height} pixmap"))
                     })?;
-                    if !transparent_page {
-                        k.fill(ts_color(Color::WHITE));
-                    }
-                    match paint(&mut k, PaintTarget::CmykK, buf_bytes)? {
-                        (_, Some(why)) => Some(why),
-                        (_, None) => {
-                            if transparent_page {
-                                composite_on_white(&mut pixmap);
-                                composite_on_white(&mut k);
+                    match pass(&mut k, PaintTarget::CmykK)? {
+                        Err(why) => Some(why),
+                        Ok(_) if !combine_cmyk(&mut pixmap, &k) => {
+                            Some("its passes disagree on coverage".to_string())
+                        }
+                        Ok(_) => {
+                            doc.reset_work(&after_first);
+                            composite_on_white(&mut pixmap);
+                            let mut r1 = r1;
+                            if let Ok(Some(a)) = &cmyk {
+                                if !r1.color_approximations.contains(a) {
+                                    r1.color_approximations.push(a.clone());
+                                }
                             }
-                            combine_cmyk(&mut pixmap, &k);
                             reports = Some(r1);
                             None
                         }
                     }
                 }
             }
-        } else {
-            Some("buffers over max_render_buffer_bytes".to_string())
         };
         if let Some(why) = why {
+            doc.reset_work(&start);
             pixmap.fill(tiny_skia::Color::TRANSPARENT);
             if !transparent_page {
                 pixmap.fill(ts_color(Color::WHITE));
@@ -754,27 +775,41 @@ fn composite_on_white(pixmap: &mut Pixmap) {
     }
 }
 
-/// The page's /Group is a transparency group whose /CS is a DeviceCMYK
-/// blending space (`is_cmyk_blend_space`), under the page's resources.
-/// A /Group or /CS that cannot be read keeps the page in RGB, as the
-/// page group's /CS was before it was read at all.
-fn page_group_is_cmyk(doc: &Document, page: &Page, resources: &Object, limits: &Limits) -> bool {
-    let Ok(Some(g)) = page_dict_entry(doc, page, b"Group") else {
-        return false;
-    };
-    let Ok(g) = doc.deref(&g) else {
-        return false;
-    };
-    let Some(gd) = g.as_dict() else {
-        return false;
-    };
+/// The page's /Group, when it is a transparency group whose /CS is a
+/// DeviceCMYK blending space (`is_cmyk_blend_space`) under the page's
+/// resources: `Ok(approximation)` to blend in it (an ICCBased space's
+/// note, if any), `Err(why)` when the page must be
+/// blended in RGB and reported (a knockout page group: its objects are
+/// not composited against the group's initial backdrop here). `None`
+/// otherwise — also when the /Group or /CS cannot be read, which keeps
+/// the page in RGB, as the page group's /CS was before it was read.
+fn page_group_cmyk(
+    doc: &Document,
+    page: &Page,
+    resources: &Object,
+    limits: &Limits,
+) -> Option<Result<Option<String>, &'static str>> {
+    let g = page_dict_entry(doc, page, b"Group").ok()??;
+    let g = doc.deref(&g).ok()?;
+    let gd = g.as_dict()?;
     if gd.get(b"S".as_slice()).and_then(|o| o.as_name()) != Some(b"Transparency".as_slice()) {
-        return false;
+        return None;
     }
-    let Some(cs) = gd.get(b"CS".as_slice()) else {
-        return false;
-    };
-    ColorSpace::parse(doc, cs, resources, limits).is_ok_and(|cs| is_cmyk_blend_space(&cs))
+    let cs = gd.get(b"CS".as_slice())?;
+    let cs = ColorSpace::parse(doc, cs, resources, limits).ok()?;
+    if !is_cmyk_blend_space(&cs) {
+        return None;
+    }
+    let knockout = gd
+        .get(b"K".as_slice())
+        .and_then(|o| doc.deref(o).ok())
+        .and_then(|o| o.as_bool());
+    Some(if knockout == Some(true) {
+        Err("a knockout page group")
+    } else {
+        // An ICCBased space blended through its alternate.
+        Ok(cs.approximation())
+    })
 }
 
 /// Encode a rendered pixmap as PNG bytes (RGBA8).
@@ -1496,7 +1531,7 @@ fn dash_by_contour(
 /// What one render's dashed strokes have used of their budgets
 /// (`MAX_DASHED_PAGE_WORK`, `MAX_DASHED_RENDER_EDGES`). One per render,
 /// never reset during it.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct DashBudget {
     /// Σ of the strokes' row work.
     row_work: f64,
@@ -4030,10 +4065,19 @@ impl<'a> Renderer<'a> {
                     ),
                 });
             }
-            let knockout = gd.get(b"K".as_slice()).and_then(|o| o.as_bool()) == Some(true);
-            let isolated = gd.get(b"I".as_slice()).and_then(|o| o.as_bool()) == Some(true);
+            let flag = |key: &[u8]| -> Result<bool, Error> {
+                Ok(match gd.get(key) {
+                    Some(o) => self.doc.deref(o)?.as_bool() == Some(true),
+                    None => false,
+                })
+            };
+            let knockout = flag(b"K")?;
+            let isolated = flag(b"I")?;
+            // Table 147: /CS is for isolated groups; a non-isolated
+            // group's is not read (its parent's space is its own).
             group_cs = match gd.get(b"CS".as_slice()) {
                 None | Some(Object::Null) => None,
+                Some(_) if !isolated => None,
                 Some(o) => Some(o.clone()),
             };
             let opaque_normal = self.gs.fill_alpha >= 1.0
@@ -4175,9 +4219,15 @@ impl<'a> Renderer<'a> {
     /// A group's `/CS` as a blending space: DeviceCMYK (also through
     /// `/DefaultCMYK`, or an ICCBased N = 4 space rendered through its
     /// alternate, as every colour in it is) or another space.
+    /// A /CS that cannot be read is another space: the group blends in
+    /// RGB, as when /CS was not read at all.
     fn blend_space(&mut self, cs: &Object) -> Result<BlendSpace, Error> {
-        let cs = ColorSpace::parse(self.doc, cs, &self.resources, self.limits)?;
+        let Ok(cs) = ColorSpace::parse(self.doc, cs, &self.resources, self.limits) else {
+            return Ok(BlendSpace::Other);
+        };
         Ok(if is_cmyk_blend_space(&cs) {
+            // An ICCBased space blended through its alternate.
+            self.note_approximation(&cs);
             BlendSpace::Cmyk
         } else {
             BlendSpace::Other
@@ -4273,9 +4323,46 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    /// Run `ops` once per pass onto transparent `w × h` layers (state
-    /// restored between passes, colours repainted for each) and combine
-    /// them; `None` when the passes were abandoned (reported).
+    /// What a painting has moved so far — the work budgets, the
+    /// reports, the document's counters — to repeat it from the same
+    /// point (`reset_work`).
+    fn work_mark(&self) -> RendererMark {
+        RendererMark {
+            xobject_invocations: self.xobject_invocations,
+            text_codes: self.text_codes,
+            pattern_tiles: self.pattern_tiles,
+            extract_unicode_bytes: self.extract_unicode_bytes,
+            dash_work: self.dash_work.clone(),
+            substitutions: self.substitutions.len(),
+            color_approximations: self.color_approximations.len(),
+            image_approximations: self.image_approximations.borrow().len(),
+            doc: self.doc.work_mark(),
+        }
+    }
+
+    fn reset_work(&mut self, m: &RendererMark) {
+        self.xobject_invocations = m.xobject_invocations;
+        self.text_codes = m.text_codes;
+        self.pattern_tiles = m.pattern_tiles;
+        self.extract_unicode_bytes = m.extract_unicode_bytes;
+        self.dash_work = m.dash_work.clone();
+        self.substitutions.truncate(m.substitutions);
+        self.color_approximations.truncate(m.color_approximations);
+        self.image_approximations
+            .borrow_mut()
+            .truncate(m.image_approximations);
+        self.doc.reset_work(&m.doc);
+    }
+
+    /// Run `ops` once per pass onto transparent `w × h` layers and
+    /// combine them; `None` when the passes were abandoned (reported).
+    /// Both passes start from the same state, budgets and buffer
+    /// headroom (both layers counted in each), so they take the same
+    /// decisions; the work counters are left as after one pass — the
+    /// passes repeat one painting — and, abandoned, as before them, so
+    /// that the RGB painting that follows runs exactly as it would have.
+    /// A limit reached in a pass abandons it rather than failing: the
+    /// RGB painting is then judged on its own.
     fn cmyk_passes(
         &mut self,
         ops: &[Operation],
@@ -4284,6 +4371,8 @@ impl<'a> Renderer<'a> {
         bytes: u64,
     ) -> Result<Option<Pixmap>, Error> {
         let saved = (self.gs.clone(), self.gs_stack.len());
+        let start = self.work_mark();
+        let mut after_first = None;
         let outer = self.cmyk_fallback.take();
         self.cmyk_regions += 1;
         let mut layers = Vec::with_capacity(2);
@@ -4294,6 +4383,7 @@ impl<'a> Renderer<'a> {
             })?;
             self.gs = saved.0.clone();
             self.gs_stack.truncate(saved.1);
+            self.reset_work(&start);
             // Inside the group: alpha constants 1, Normal, no soft
             // mask (§11.6.6), as `run_in_layer` sets them.
             self.clear_soft_mask();
@@ -4303,9 +4393,9 @@ impl<'a> Renderer<'a> {
             let prev = std::mem::replace(&mut self.paint_target, target);
             let r = self.repaint_colors().and_then(|()| {
                 std::mem::swap(&mut *self.pixmap, &mut layer);
-                self.layer_bytes += bytes * (1 + layers.len() as u64);
+                self.layer_bytes += bytes * 2;
                 let r = self.run(ops);
-                self.layer_bytes -= bytes * (1 + layers.len() as u64);
+                self.layer_bytes -= bytes * 2;
                 std::mem::swap(&mut *self.pixmap, &mut layer);
                 r
             });
@@ -4314,15 +4404,20 @@ impl<'a> Renderer<'a> {
                 failure = Some(why);
                 break;
             }
-            if is_buffer_budget(&r) {
-                // The other pass's layer is alive beside this one.
-                failure = Some("buffers over max_render_buffer_bytes".to_string());
-                break;
+            match r {
+                Ok(()) => {}
+                Err(Error::LimitExceeded { limit, .. }) => {
+                    failure = Some(format!("{limit} reached in its passes"));
+                    break;
+                }
+                Err(e) => {
+                    self.cmyk_regions -= 1;
+                    self.cmyk_fallback = outer;
+                    return Err(e);
+                }
             }
-            if let Err(e) = r {
-                self.cmyk_regions -= 1;
-                self.cmyk_fallback = outer;
-                return Err(e);
+            if after_first.is_none() {
+                after_first = Some(self.work_mark());
             }
             layers.push(layer);
         }
@@ -4330,14 +4425,20 @@ impl<'a> Renderer<'a> {
         self.cmyk_fallback = outer;
         self.gs = saved.0;
         self.gs_stack.truncate(saved.1);
+        if failure.is_none() {
+            let k = layers.pop().expect("two passes");
+            let mut cmy = layers.pop().expect("two passes");
+            if combine_cmyk(&mut cmy, &k) {
+                self.reset_work(after_first.as_ref().expect("first pass done"));
+                return Ok(Some(cmy));
+            }
+            failure = Some("its passes disagree on coverage".to_string());
+        }
+        self.reset_work(&start);
         if let Some(why) = failure {
             self.note_cmyk_approximation(&why);
-            return Ok(None);
         }
-        let k = layers.pop().expect("two passes");
-        let mut cmy = layers.pop().expect("two passes");
-        combine_cmyk(&mut cmy, &k);
-        Ok(Some(cmy))
+        Ok(None)
     }
 
     /// Paint a transparency group's `ops` offscreen and composite the
@@ -5844,12 +5945,27 @@ impl<'a> Renderer<'a> {
         let paints_nothing = cs.paints_nothing();
         let mut conv = SampleConverter::new(cs.clone(), bpc, &decode, self.paint_target)?;
         let mut comps = vec![0u32; ncomps];
+        // /SMaskInData 2 (§7.4.9): the colour samples are premultiplied
+        // by the JPX alpha in the image's own colour space — divided
+        // there, before any conversion.
+        let premultiplied = match &jpx {
+            Some(j) if smask_in_data == 2 => j.alpha.as_deref(),
+            _ => None,
+        };
+        let max_sample = (1u64 << bpc) - 1;
         for y in 0..h {
             let row_bit = y as u64 * row_bytes * 8;
             for x in 0..w {
                 let base = row_bit + x as u64 * ncomps as u64 * bpc as u64;
                 for (c, slot) in comps.iter_mut().enumerate() {
                     *slot = read_bits(&data, base + c as u64 * bpc as u64, bpc);
+                }
+                if let Some(a) = premultiplied.and_then(|al| al.get(y * w + x)).copied() {
+                    if a != 0 && a != 255 {
+                        for v in comps.iter_mut() {
+                            *v = (*v as u64 * 255 / a as u64).min(max_sample) as u32;
+                        }
+                    }
                 }
                 let rgb = conv.convert(&comps)?;
                 let i = (y * w + x) * 4;
@@ -5877,11 +5993,6 @@ impl<'a> Renderer<'a> {
             let alpha = j.alpha.as_ref().expect("checked above");
             for (i, a) in alpha.iter().enumerate() {
                 let p = &mut rgba[i * 4..i * 4 + 4];
-                if smask_in_data == 2 && *a != 0 && *a != 255 {
-                    for c in p.iter_mut().take(3) {
-                        *c = ((*c as u32 * 255 / *a as u32).min(255)) as u8;
-                    }
-                }
                 p[3] = mul255(p[3], *a);
             }
         } else if self.knockout_shape > 0
@@ -9103,6 +9214,19 @@ enum BlendSpace {
     Other,
 }
 
+/// What `Renderer::work_mark` reads.
+struct RendererMark {
+    xobject_invocations: u64,
+    text_codes: u64,
+    pattern_tiles: u64,
+    extract_unicode_bytes: u64,
+    dash_work: DashBudget,
+    substitutions: usize,
+    color_approximations: usize,
+    image_approximations: usize,
+    doc: crate::document::WorkMark,
+}
+
 /// `r` failed on the render buffer budget.
 fn is_buffer_budget<T>(r: &Result<T, Error>) -> bool {
     matches!(
@@ -9136,11 +9260,25 @@ fn is_cmyk_blend_space(cs: &ColorSpace) -> bool {
 }
 
 /// §11.3.4 / §10.3.5: the two passes of a DeviceCMYK group → its RGB
-/// result, in place in `cmy`. Both are premultiplied with the same alpha
-/// (same shapes, opacity and blend per channel); per pixel with α > 0:
+/// result, in place in `cmy`; `false` (nothing changed) unless both
+/// have the same alpha and the K pass's three channels are equal at
+/// every pixel (same shapes, opacity and blend per channel). Per pixel
+/// with α > 0:
 /// C = 1 − r₁/α, M = 1 − g₁/α, Y = 1 − b₁/α, K = 1 − r₂/α, converted by
 /// §10.3.5 and premultiplied again. α = 0 stays transparent.
-fn combine_cmyk(cmy: &mut Pixmap, k: &Pixmap) {
+fn combine_cmyk(cmy: &mut Pixmap, k: &Pixmap) -> bool {
+    // The passes paint the same shapes with the same opacity: their
+    // alpha agrees everywhere, or they cannot be combined.
+    if cmy
+        .data()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(k.data().as_chunks::<4>().0)
+        .any(|(p, q)| p[3] != q[3] || q[0] != q[1] || q[0] != q[2])
+    {
+        return false;
+    }
     for (p, q) in cmy
         .data_mut()
         .as_chunks_mut::<4>()
@@ -9168,6 +9306,7 @@ fn combine_cmyk(cmy: &mut Pixmap, k: &Pixmap) {
             *d = (v * af).round().clamp(0.0, af) as u8;
         }
     }
+    true
 }
 
 /// Colour components → RGBA8 through `cs`, painted for `target`. A `/None` Separation
@@ -9739,6 +9878,31 @@ fn hairline_width() -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cmyk_passes_combine_only_with_equal_alpha() {
+        let mut cmy = Pixmap::new(2, 1).unwrap();
+        let mut k = Pixmap::new(2, 1).unwrap();
+        // Pixel 0: C = M = Y = 0, K = 0.5 at alpha 1 → grey 0.5; pixel 1
+        // transparent in both.
+        cmy.data_mut()[..4].copy_from_slice(&[255, 255, 255, 255]);
+        k.data_mut()[..4].copy_from_slice(&[128, 128, 128, 255]);
+        let mut a = cmy.clone();
+        assert!(combine_cmyk(&mut a, &k));
+        assert_eq!(&a.data()[..4], &[128, 128, 128, 255]);
+        assert_eq!(&a.data()[4..], &[0, 0, 0, 0]);
+        // Alpha differing, or the K pass's channels differing: refused,
+        // nothing changed.
+        let mut k2 = k.clone();
+        k2.data_mut()[7] = 10;
+        k2.data_mut()[4..7].copy_from_slice(&[10, 10, 10]);
+        let mut a = cmy.clone();
+        assert!(!combine_cmyk(&mut a, &k2));
+        assert_eq!(a.data(), cmy.data());
+        let mut k3 = k.clone();
+        k3.data_mut()[1] = 127;
+        assert!(!combine_cmyk(&mut cmy.clone(), &k3));
+    }
+
     use super::*;
 
     /// A `w` × `h` texture whose pixel (x, y) is opaque grey `f(x, y)`.
