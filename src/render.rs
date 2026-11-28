@@ -5402,7 +5402,15 @@ impl<'a> Renderer<'a> {
             Some(o) => Some(self.doc.deref(o)?),
             None => None,
         };
+        // Table 87 / §11.6.4.3: a soft mask — /SMask, or one in the JPX
+        // data (/SMaskInData ≠ 0) — overrides the image's /Mask entry;
+        // a colour key then masks nothing.
+        let soft_mask_overrides = dict
+            .get(b"SMask".as_slice())
+            .is_some_and(|o| !matches!(o, Object::Null))
+            || (jpx.is_some() && smask_in_data != 0);
         let color_key: Option<Vec<(u32, u32)>> = match &mask_entry {
+            Some(Object::Array(_)) if soft_mask_overrides => None,
             Some(Object::Array(a)) => {
                 if a.len() != ncomps * 2 {
                     return Err(Error::Structure(format!(
@@ -5431,6 +5439,15 @@ impl<'a> Renderer<'a> {
         let paints_nothing = cs.paints_nothing();
         let mut conv = SampleConverter::new(cs.clone(), bpc, &decode)?;
         let mut comps = vec![0u32; ncomps];
+        // /SMaskInData 2 (Table 87, §7.4.9): the colour channels are
+        // premultiplied with the opacity channel — preblended with a
+        // zero background in the image's own colour space — so they are
+        // divided by it there, before any conversion.
+        let premultiplied = match &jpx {
+            Some(j) if smask_in_data == 2 => j.alpha.as_deref(),
+            _ => None,
+        };
+        let max_sample = (1u64 << bpc) - 1;
         for y in 0..h {
             let row_bit = y as u64 * row_bytes * 8;
             for x in 0..w {
@@ -5438,11 +5455,6 @@ impl<'a> Renderer<'a> {
                 for (c, slot) in comps.iter_mut().enumerate() {
                     *slot = read_bits(&data, base + c as u64 * bpc as u64, bpc);
                 }
-                let rgb = conv.convert(&comps)?;
-                let i = (y * w + x) * 4;
-                rgba[i] = rgb[0];
-                rgba[i + 1] = rgb[1];
-                rgba[i + 2] = rgb[2];
                 let masked = color_key
                     .as_ref()
                     .map(|r| {
@@ -5452,6 +5464,18 @@ impl<'a> Renderer<'a> {
                             .all(|(v, (lo, hi))| *v >= *lo && *v <= *hi)
                     })
                     .unwrap_or(false);
+                if let Some(a) = premultiplied.and_then(|al| al.get(y * w + x)).copied() {
+                    if a != 0 && a != 255 {
+                        for v in comps.iter_mut() {
+                            *v = (*v as u64 * 255 / a as u64).min(max_sample) as u32;
+                        }
+                    }
+                }
+                let rgb = conv.convert(&comps)?;
+                let i = (y * w + x) * 4;
+                rgba[i] = rgb[0];
+                rgba[i + 1] = rgb[1];
+                rgba[i + 2] = rgb[2];
                 rgba[i + 3] = if masked || paints_nothing { 0 } else { 255 };
             }
         }
@@ -5464,11 +5488,6 @@ impl<'a> Renderer<'a> {
             let alpha = j.alpha.as_ref().expect("checked above");
             for (i, a) in alpha.iter().enumerate() {
                 let p = &mut rgba[i * 4..i * 4 + 4];
-                if smask_in_data == 2 && *a != 0 && *a != 255 {
-                    for c in p.iter_mut().take(3) {
-                        *c = ((*c as u32 * 255 / *a as u32).min(255)) as u8;
-                    }
-                }
                 p[3] = mul255(p[3], *a);
             }
         } else if self.knockout_shape > 0

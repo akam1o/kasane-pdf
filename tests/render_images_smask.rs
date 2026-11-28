@@ -116,6 +116,36 @@ fn smask_simple_left_opaque_right_transparent() {
 }
 
 #[test]
+fn smask_overrides_a_colour_key() {
+    // Table 87: /SMask "shall override … the image's Mask entry, if
+    // any". A colour key matching the red samples masks nothing when a
+    // soft mask is present — the soft mask alone decides (left column
+    // opaque, right transparent); without the soft mask it keys them out.
+    let red = [255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0];
+    let key = "/Mask [255 255 0 0 0 0]";
+    let pdf = page(
+        b"q 40 0 0 40 10 10 cm /Im Do Q",
+        &[("Im", 5)],
+        "",
+        vec![
+            (5, rgb_image(2, 2, &red, &format!("/SMask 6 0 R {key}"))),
+            (6, gray_mask(2, 2, &[255, 0, 255, 0], "")),
+        ],
+    );
+    let r = render(&pdf).unwrap();
+    assert_eq!(px(&r, 20, 60), RED);
+    assert_eq!(px(&r, 40, 60), WHITE);
+    let pdf = page(
+        b"q 40 0 0 40 10 10 cm /Im Do Q",
+        &[("Im", 5)],
+        "",
+        vec![(5, rgb_image(2, 2, &red, key))],
+    );
+    let r = render(&pdf).unwrap();
+    assert_eq!(px(&r, 20, 60), WHITE);
+}
+
+#[test]
 fn smask_gradient_alpha_no_halo() {
     // 4×1 blue image under a 0/85/170/255 mask: each 10-pt column
     // blends blue over white by its alpha; no dark fringe anywhere.
