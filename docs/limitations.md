@@ -101,8 +101,11 @@ are on the [roadmap](architecture.md#roadmap).
   DeviceGray or calibrated `/CS` blends in RGB, as does a DeviceCMYK one
   with a non-separable blend mode, a knockout group, an isolated group
   in another space or a pattern selected outside it (reported in
-  `color_approximations`). A soft mask's luminosity is taken from its
-  group painted in RGB, whatever the group's `/CS`. A page or group
+  `color_approximations`). A soft mask's luminosity, and its `/BC`
+  backdrop, are taken in RGB: its group is painted in RGB (an isolated
+  DeviceCMYK group inside it, or the mask group itself when isolated
+  with a DeviceCMYK `/CS`, blends in CMYK and is converted to RGB at its
+  end). A page or group
   blending in CMYK is painted twice (twice the interpretation work and
   one more buffer of its size): both passes get the same budgets and
   buffer headroom, the work budgets are charged for one painting, and

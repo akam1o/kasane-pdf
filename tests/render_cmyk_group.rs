@@ -727,12 +727,16 @@ fn a_premultiplied_jpx_image_in_a_cmyk_group() {
 }
 
 fn jpx_page(g: &str, jp2: &[u8]) -> Vec<u8> {
+    jpx_page_with(g, jp2, "")
+}
+
+fn jpx_page_with(g: &str, jp2: &[u8], extra: &str) -> Vec<u8> {
     let side = if jp2.len() == RED_PM_JP2.len() { 8 } else { 4 };
     {
         let content = b"q 10 0 0 10 0 0 cm /Im Do Q";
         let mut img = format!(
             "<< /Type /XObject /Subtype /Image /Width {side} /Height {side} /Filter /JPXDecode \
-             /SMaskInData 2 /Length {} >>\nstream\n",
+             /SMaskInData 2 {extra} /Length {} >>\nstream\n",
             jp2.len()
         )
         .into_bytes();
@@ -796,5 +800,62 @@ fn every_buffer_budget_for_a_cmyk_group_form() {
             }
         }
         assert_eq!(seen, (true, true), "{inner}");
+    }
+}
+
+#[test]
+fn an_abandoned_pass_leaves_no_interpreter_state_behind() {
+    // The CMYK group's pass is abandoned (Hue) inside a hidden optional
+    // content span: the span the pass opened is closed with it, and the
+    // red rectangle drawn after the group is visible.
+    let mk = |cs: &str| {
+        build_pdf(&[
+            (
+                1,
+                b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [8 0 R] \
+                  /D << /OFF [8 0 R] >> >> >>"
+                    .to_vec(),
+            ),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Contents 4 0 R \
+                  /Resources << /XObject << /G 5 0 R >> >> >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", b"/G Do 1 0 0 rg 0 0 10 10 re f")),
+            (
+                5,
+                stream_obj(
+                    &format!(
+                        "/Type /XObject /Subtype /Form /BBox [0 0 10 10] \
+                         /Group << /S /Transparency /I true {cs} >> \
+                         /Resources << /Properties << /Layer 8 0 R >> /ExtGState << /H 6 0 R >> >>"
+                    ),
+                    b"/OC /Layer BDC /H gs 0 0 0 1 k 0 0 10 10 re f EMC",
+                ),
+            ),
+            (6, b"<< /BM /Hue >>".to_vec()),
+            (8, b"<< /Type /OCG /Name (L) >>".to_vec()),
+        ])
+    };
+    let a = render(mk("/CS /DeviceCMYK"), &opts());
+    let b = render(mk(""), &opts());
+    assert_eq!(a.pixmap().data(), b.pixmap().data());
+    close(rgb(&a, 5, 5), [1.0, 0.0, 0.0], "after the group");
+    assert!(!a.color_approximations().is_empty());
+}
+
+#[test]
+fn the_colour_key_of_a_premultiplied_jpx_image_is_on_its_stored_samples() {
+    // §8.9.6.4: /Mask [128 128 0 0 0 0] keys the stored samples
+    // (128, 0, 0) — every pixel is masked out — before /SMaskInData 2
+    // divides them by their alpha.
+    for g in [CMYK_PAGE, ""] {
+        let r = render(
+            jpx_page_with(g, RED_PM_JP2, "/Mask [128 128 0 0 0 0]"),
+            &opts(),
+        );
+        close(rgb(&r, 5, 5), [1.0; 3], g);
     }
 }

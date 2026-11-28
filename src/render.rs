@@ -4340,6 +4340,58 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    fn interp_mark(&self) -> InterpMark {
+        InterpMark {
+            path: self.path.clone(),
+            in_text: self.in_text,
+            text_clip: self.text_clip.clone(),
+            text_tm: self.text_tm,
+            text_tlm: self.text_tlm,
+            resources: self.resources.clone(),
+            xobject_depth: self.xobject_depth,
+            xobject_stack: self.xobject_stack.len(),
+            pattern_base: self.pattern_base,
+            pattern_depth: self.pattern_depth,
+            type3_depth: self.type3_depth,
+            pattern_stack: self.pattern_stack.len(),
+            uncolored_depth: self.uncolored_depth,
+            knockout_shape: self.knockout_shape,
+            texel_scale: self.texel_scale,
+            device_to_target: self.device_to_target,
+            user_to_pix: self.user_to_pix,
+            user_to_pix_exact: self.user_to_pix_exact,
+            oc_include_hidden: self.oc_include_hidden,
+            mc_stack: self.mc_stack.clone(),
+            hidden: self.hidden,
+            layer_bytes: self.layer_bytes,
+        }
+    }
+
+    fn reset_interp(&mut self, m: &InterpMark) {
+        self.path = m.path.clone();
+        self.in_text = m.in_text;
+        self.text_clip = m.text_clip.clone();
+        self.text_tm = m.text_tm;
+        self.text_tlm = m.text_tlm;
+        self.swap_resources(m.resources.clone());
+        self.xobject_depth = m.xobject_depth;
+        self.xobject_stack.truncate(m.xobject_stack);
+        self.pattern_base = m.pattern_base;
+        self.pattern_depth = m.pattern_depth;
+        self.type3_depth = m.type3_depth;
+        self.pattern_stack.truncate(m.pattern_stack);
+        self.uncolored_depth = m.uncolored_depth;
+        self.knockout_shape = m.knockout_shape;
+        self.texel_scale = m.texel_scale;
+        self.device_to_target = m.device_to_target;
+        self.user_to_pix = m.user_to_pix;
+        self.user_to_pix_exact = m.user_to_pix_exact;
+        self.oc_include_hidden = m.oc_include_hidden;
+        self.mc_stack = m.mc_stack.clone();
+        self.hidden = m.hidden;
+        self.layer_bytes = m.layer_bytes;
+    }
+
     fn reset_work(&mut self, m: &RendererMark) {
         self.xobject_invocations = m.xobject_invocations;
         self.text_codes = m.text_codes;
@@ -4371,6 +4423,7 @@ impl<'a> Renderer<'a> {
         bytes: u64,
     ) -> Result<Option<Pixmap>, Error> {
         let saved = (self.gs.clone(), self.gs_stack.len());
+        let interp = self.interp_mark();
         let start = self.work_mark();
         let mut after_first = None;
         let outer = self.cmyk_fallback.take();
@@ -4383,6 +4436,7 @@ impl<'a> Renderer<'a> {
             })?;
             self.gs = saved.0.clone();
             self.gs_stack.truncate(saved.1);
+            self.reset_interp(&interp);
             self.reset_work(&start);
             // Inside the group: alpha constants 1, Normal, no soft
             // mask (§11.6.6), as `run_in_layer` sets them.
@@ -4425,6 +4479,7 @@ impl<'a> Renderer<'a> {
         self.cmyk_fallback = outer;
         self.gs = saved.0;
         self.gs_stack.truncate(saved.1);
+        self.reset_interp(&interp);
         if failure.is_none() {
             let k = layers.pop().expect("two passes");
             let mut cmy = layers.pop().expect("two passes");
@@ -5960,6 +6015,17 @@ impl<'a> Renderer<'a> {
                 for (c, slot) in comps.iter_mut().enumerate() {
                     *slot = read_bits(&data, base + c as u64 * bpc as u64, bpc);
                 }
+                // §8.9.6.4: the colour key is compared with the samples as
+                // stored.
+                let masked = color_key
+                    .as_ref()
+                    .map(|r| {
+                        comps
+                            .iter()
+                            .zip(r)
+                            .all(|(v, (lo, hi))| *v >= *lo && *v <= *hi)
+                    })
+                    .unwrap_or(false);
                 if let Some(a) = premultiplied.and_then(|al| al.get(y * w + x)).copied() {
                     if a != 0 && a != 255 {
                         for v in comps.iter_mut() {
@@ -5972,15 +6038,6 @@ impl<'a> Renderer<'a> {
                 rgba[i] = rgb[0];
                 rgba[i + 1] = rgb[1];
                 rgba[i + 2] = rgb[2];
-                let masked = color_key
-                    .as_ref()
-                    .map(|r| {
-                        comps
-                            .iter()
-                            .zip(r)
-                            .all(|(v, (lo, hi))| *v >= *lo && *v <= *hi)
-                    })
-                    .unwrap_or(false);
                 rgba[i + 3] = if masked || paints_nothing { 0 } else { 255 };
             }
         }
@@ -9212,6 +9269,35 @@ enum BlendSpace {
     Inherited,
     Cmyk,
     Other,
+}
+
+/// The interpreter's state outside the graphics state — what a content
+/// stream changes and restores as it runs — read by
+/// `Renderer::interp_mark`: a pass abandoned part-way (an error unwinds
+/// it) is undone with it before the region is painted again.
+struct InterpMark {
+    path: CurrentPath,
+    in_text: bool,
+    text_clip: Option<PathBuilder>,
+    text_tm: Matrix,
+    text_tlm: Matrix,
+    resources: Object,
+    xobject_depth: u32,
+    xobject_stack: usize,
+    pattern_base: Matrix,
+    pattern_depth: u32,
+    type3_depth: u32,
+    pattern_stack: usize,
+    uncolored_depth: u32,
+    knockout_shape: u32,
+    texel_scale: f64,
+    device_to_target: Transform,
+    user_to_pix: Transform,
+    user_to_pix_exact: Matrix,
+    oc_include_hidden: bool,
+    mc_stack: Vec<McFrame>,
+    hidden: u32,
+    layer_bytes: u64,
 }
 
 /// What `Renderer::work_mark` reads.

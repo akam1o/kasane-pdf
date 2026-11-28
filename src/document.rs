@@ -713,11 +713,20 @@ impl Document {
     /// once, as a single painting does.
     pub(crate) fn work_mark(&self) -> WorkMark {
         let w = self.warnings.borrow();
+        let me = self as *const Document as usize;
         WorkMark {
             refs: self.ref_budget.get(),
             decoded: self.decoded_budget.get(),
             raw_cr: self.raw_cr_object_strings.get(),
             warnings: (w.list.clone(), w.dropped, w.recoveries),
+            objstms: self.objstm_cache.borrow().keys().copied().collect(),
+            objstm_bytes: self.objstm_cached_bytes.get(),
+            fonts: FONT_CACHE.with(|c| {
+                c.borrow()
+                    .get(&me)
+                    .map(|f| (f.fonts.keys().cloned().collect(), f.bytes))
+                    .unwrap_or_default()
+            }),
         }
     }
 
@@ -730,6 +739,19 @@ impl Document {
         w.list = m.warnings.0.clone();
         w.dropped = m.warnings.1;
         w.recoveries = m.warnings.2;
+        // What was cached since is dropped too: a replay pays for it
+        // again, as the painting it repeats did.
+        self.objstm_cache
+            .borrow_mut()
+            .retain(|k, _| m.objstms.contains(k));
+        self.objstm_cached_bytes.set(m.objstm_bytes);
+        let me = self as *const Document as usize;
+        FONT_CACHE.with(|c| {
+            if let Some(f) = c.borrow_mut().get_mut(&me) {
+                f.fonts.retain(|k, _| m.fonts.0.contains(k));
+                f.bytes = m.fonts.1;
+            }
+        });
     }
 
     /// What is left of the current operation's decoded-bytes budget.
@@ -1698,6 +1720,9 @@ pub(crate) struct WorkMark {
     decoded: u64,
     raw_cr: u64,
     warnings: (Vec<crate::Warning>, u64, u64),
+    objstms: std::collections::HashSet<u32>,
+    objstm_bytes: u64,
+    fonts: (std::collections::HashSet<(IndirectRef, crate::Limits)>, u64),
 }
 
 /// Guard returned by [`Document::decoded_budget_scope`].
@@ -1719,6 +1744,32 @@ impl Drop for DecodedBudgetScope<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_work_drops_what_was_cached_since_the_mark() {
+        // An object in an object stream decoded after the mark: its
+        // stream is cached and its bytes charged; reset_work puts back
+        // both, so a replay pays for it again.
+        let data = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/objstm.pdf"
+        ))
+        .unwrap();
+        let doc = Document::from_bytes(&data).unwrap();
+        // Opening the document read the stream already: start without it.
+        doc.objstm_cache.borrow_mut().clear();
+        doc.objstm_cached_bytes.set(0);
+        let _scope = doc.decoded_budget_scope();
+        let mark = doc.work_mark();
+        let before = doc.decoded_left();
+        doc.resolve(IndirectRef::new(5, 0)).unwrap();
+        assert!(!doc.objstm_cache.borrow().is_empty());
+        assert!(doc.decoded_left() < before);
+        doc.reset_work(&mark);
+        assert!(doc.objstm_cache.borrow().is_empty());
+        assert_eq!(doc.decoded_left(), before);
+        assert_eq!(doc.objstm_cached_bytes.get(), mark.objstm_bytes);
+    }
 
     /// A one-page document drawing `/F` (object 5, a TrueType font
     /// over the bundled Liberation program, with `tounicode` as its
