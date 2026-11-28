@@ -221,32 +221,7 @@ impl ColorSpace {
                 base,
                 hival,
                 lookup,
-            } => {
-                // §8.6.6.3: the index is rounded and clipped to
-                // 0..=hival; lookup bytes map to the base component
-                // ranges (0..=1 for every base we accept, except Lab
-                // whose decode we apply explicitly).
-                let raw = c.first().copied().unwrap_or(0.0);
-                let idx = if raw.is_finite() {
-                    (raw.round().max(0.0) as u64).min(*hival as u64) as usize
-                } else {
-                    0
-                };
-                let nb = base.ncomps();
-                let start = idx * nb;
-                let bytes: Vec<f64> = (0..nb)
-                    .map(|i| lookup.get(start + i).copied().unwrap_or(0) as f64 / 255.0)
-                    .collect();
-                let comps: Vec<f64> = match &**base {
-                    ColorSpace::Lab { range, .. } => vec![
-                        bytes[0] * 100.0,
-                        range[0] + bytes[1] * (range[1] - range[0]),
-                        range[2] + bytes[2] * (range[3] - range[2]),
-                    ],
-                    _ => bytes,
-                };
-                base.to_rgb(&comps)?
-            }
+            } => base.to_rgb(&indexed_components(base, *hival, lookup, c))?,
             ColorSpace::Separation {
                 n,
                 alternate,
@@ -268,6 +243,53 @@ impl ColorSpace {
                 Some(b) => b.to_rgb(c)?,
                 None => [0.0, 0.0, 0.0],
             },
+        })
+    }
+
+    /// Components → DeviceCMYK in 0..=1, for painting into a group
+    /// whose blending colour space is DeviceCMYK (§11.3.4: colours are
+    /// converted to the group's space). Colours that `to_rgb` renders
+    /// through DeviceCMYK — DeviceCMYK itself, and ICCBased, Indexed and
+    /// Separation/DeviceN spaces whose profile is not evaluated or whose
+    /// base or alternate is DeviceCMYK — keep their CMYK components;
+    /// every other colour goes through its RGB value by
+    /// [`rgb_to_cmyk`]. Either way `DeviceCMYK.to_rgb(to_cmyk(c))`
+    /// equals `to_rgb(c)`.
+    pub(crate) fn to_cmyk(&self, c: &[f64]) -> Result<[f64; 4], Error> {
+        let at = |i: usize| clamp01(c.get(i).copied().unwrap_or(0.0));
+        Ok(match self {
+            ColorSpace::DeviceCMYK => [at(0), at(1), at(2), at(3)],
+            ColorSpace::IccBased {
+                n,
+                profile,
+                alternate,
+                ..
+            } => {
+                let comps: Vec<f64> = (0..*n).map(at).collect();
+                match profile.as_deref().and_then(|p| p.to_srgb(&comps)) {
+                    Some(rgb) => rgb_to_cmyk(rgb),
+                    None => alternate.to_cmyk(&comps)?,
+                }
+            }
+            ColorSpace::Indexed {
+                base,
+                hival,
+                lookup,
+            } => base.to_cmyk(&indexed_components(base, *hival, lookup, c))?,
+            ColorSpace::Separation {
+                n,
+                alternate,
+                tint,
+                is_none,
+            } => {
+                if *is_none {
+                    return Ok([0.0; 4]);
+                }
+                let comps: Vec<f64> = (0..*n).map(at).collect();
+                alternate.to_cmyk(&tint.eval(&comps)?)?
+            }
+            ColorSpace::Pattern { base: Some(b) } => b.to_cmyk(c)?,
+            _ => rgb_to_cmyk(self.to_rgb(c)?),
         })
     }
 
@@ -736,6 +758,75 @@ fn number_array(doc: &Document, o: &Object, len: usize, what: &str) -> Result<Ve
     Ok(out)
 }
 
+/// The RGB triple a colour is painted with. Outside a DeviceCMYK
+/// blending space it is the colour's RGB value. Inside one (§11.3.4:
+/// colours are converted to the group's space and blended there, a
+/// subtractive space through the complements of its components) the
+/// group is painted twice and each pass carries part of the colour's
+/// DeviceCMYK components in additive form: `CmykCmy` (1 − C, 1 − M,
+/// 1 − Y), `CmykK` (1 − K) in all three channels. Separable blend modes
+/// act per channel, so each pass blends exactly the complemented
+/// components; the renderer combines the two passes into CMYK and
+/// converts the group result by §10.3.5.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PaintTarget {
+    Rgb,
+    CmykCmy,
+    CmykK,
+}
+
+impl PaintTarget {
+    pub(crate) fn rgb(self, cs: &ColorSpace, c: &[f64]) -> Result<[f64; 3], Error> {
+        match self {
+            PaintTarget::Rgb => cs.to_rgb(c),
+            PaintTarget::CmykCmy => {
+                let [c, m, y, _] = cs.to_cmyk(c)?;
+                Ok([1.0 - c, 1.0 - m, 1.0 - y])
+            }
+            PaintTarget::CmykK => {
+                let k = cs.to_cmyk(c)?[3];
+                Ok([1.0 - k; 3])
+            }
+        }
+    }
+}
+
+/// §8.6.6.3: an Indexed colour's base components — the index rounded
+/// and clipped to 0..=hival, lookup bytes mapped to the base component
+/// ranges (0..=1 for every base we accept, except Lab whose decode is
+/// applied here).
+fn indexed_components(base: &ColorSpace, hival: u32, lookup: &[u8], c: &[f64]) -> Vec<f64> {
+    let raw = c.first().copied().unwrap_or(0.0);
+    let idx = if raw.is_finite() {
+        (raw.round().max(0.0) as u64).min(hival as u64) as usize
+    } else {
+        0
+    };
+    let nb = base.ncomps();
+    let start = idx * nb;
+    let bytes: Vec<f64> = (0..nb)
+        .map(|i| lookup.get(start + i).copied().unwrap_or(0) as f64 / 255.0)
+        .collect();
+    match base {
+        ColorSpace::Lab { range, .. } => vec![
+            bytes[0] * 100.0,
+            range[0] + bytes[1] * (range[1] - range[0]),
+            range[2] + bytes[2] * (range[3] - range[2]),
+        ],
+        _ => bytes,
+    }
+}
+
+/// RGB → DeviceCMYK by §10.3.4 with black generation and undercolour
+/// removal the identity (BG(k) = k, UCR(k) = k; non-`/Default` BG and
+/// UCR are refused): c' = 1 − r, …; k = min(c', m', y'); c = c' − k.
+/// §10.3.5 maps the result back to exactly `rgb`.
+pub(crate) fn rgb_to_cmyk([r, g, b]: [f64; 3]) -> [f64; 4] {
+    let (c, m, y) = (1.0 - clamp01(r), 1.0 - clamp01(g), 1.0 - clamp01(b));
+    let k = c.min(m).min(y);
+    [c - k, m - k, y - k, k]
+}
+
 fn clamp01(v: f64) -> f64 {
     if v.is_finite() {
         v.clamp(0.0, 1.0)
@@ -750,6 +841,81 @@ mod tests {
 
     fn close(a: [f64; 3], b: [f64; 3], tol: f64) -> bool {
         a.iter().zip(b).all(|(x, y)| (x - y).abs() <= tol)
+    }
+
+    #[test]
+    fn cmyk_components_render_as_the_colour_does() {
+        // §10.3.4 by hand: red → c' = (0, 1, 1), k = 0; a dark grey
+        // 0.25 → c' = (.75, .75, .75), k = .75, c = m = y = 0.
+        assert_eq!(rgb_to_cmyk([1.0, 0.0, 0.0]), [0.0, 1.0, 1.0, 0.0]);
+        assert_eq!(rgb_to_cmyk([0.25, 0.25, 0.25]), [0.0, 0.0, 0.0, 0.75]);
+        assert_eq!(rgb_to_cmyk([0.2, 0.6, 1.0]), [0.8, 0.4, 0.0, 0.0]);
+        // DeviceCMYK keeps its components, clipped (§8.6.3), even when
+        // C + K exceeds 1 (no undercolour removal of the source).
+        assert_eq!(
+            ColorSpace::DeviceCMYK
+                .to_cmyk(&[1.0, 0.0, 0.0, 0.5])
+                .unwrap(),
+            [1.0, 0.0, 0.0, 0.5]
+        );
+        assert_eq!(
+            ColorSpace::DeviceCMYK
+                .to_cmyk(&[2.0, -1.0, 0.25, 0.5])
+                .unwrap(),
+            [1.0, 0.0, 0.25, 0.5]
+        );
+        let cmyk_indexed = ColorSpace::Indexed {
+            base: Rc::new(ColorSpace::DeviceCMYK),
+            hival: 1,
+            lookup: vec![0, 255, 0, 0, 255, 0, 0, 128],
+        };
+        assert_eq!(cmyk_indexed.to_cmyk(&[0.0]).unwrap(), [0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(
+            cmyk_indexed.to_cmyk(&[1.0]).unwrap(),
+            [1.0, 0.0, 0.0, 128.0 / 255.0]
+        );
+        // Every space: DeviceCMYK.to_rgb(to_cmyk(c)) == to_rgb(c).
+        let rgb_indexed = ColorSpace::Indexed {
+            base: Rc::new(ColorSpace::DeviceRGB),
+            hival: 1,
+            lookup: vec![10, 200, 30, 255, 255, 255],
+        };
+        let spaces: Vec<(ColorSpace, Vec<Vec<f64>>)> = vec![
+            (
+                ColorSpace::DeviceGray,
+                vec![vec![0.0], vec![0.3], vec![1.0]],
+            ),
+            (
+                ColorSpace::DeviceRGB,
+                vec![
+                    vec![0.0, 0.0, 0.0],
+                    vec![0.9, 0.1, 0.4],
+                    vec![1.0, 1.0, 1.0],
+                ],
+            ),
+            (
+                ColorSpace::DeviceCMYK,
+                vec![
+                    vec![0.2, 0.7, 0.1, 0.3],
+                    vec![1.0, 0.0, 0.0, 0.5],
+                    vec![0.0; 4],
+                ],
+            ),
+            (cmyk_indexed, vec![vec![0.0], vec![1.0], vec![7.0]]),
+            (rgb_indexed, vec![vec![0.0], vec![1.0]]),
+        ];
+        for (cs, cases) in &spaces {
+            for c in cases {
+                let direct = cs.to_rgb(c).unwrap();
+                let via = ColorSpace::DeviceCMYK
+                    .to_rgb(&cs.to_cmyk(c).unwrap())
+                    .unwrap();
+                assert!(
+                    close(direct, via, 1e-12),
+                    "{cs:?} {c:?}: {direct:?} vs {via:?}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -42,7 +42,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::colorspace::ColorSpace;
+use crate::colorspace::{ColorSpace, PaintTarget};
 use crate::content::Operation;
 use crate::document::Document;
 use crate::error::Error;
@@ -71,6 +71,11 @@ struct GraphicsState {
     fill_space: Rc<ColorSpace>,
     stroke_color: Color,
     fill_color: Color,
+    /// The components `stroke_color` / `fill_color` were made from, in
+    /// their space, so a colour set outside a DeviceCMYK group can be
+    /// repainted in the group's passes (`Renderer::repaint_colors`).
+    stroke_comps: Vec<f64>,
+    fill_comps: Vec<f64>,
     /// The shading pattern selected by `scn`/`SCN` while the colour
     /// space is `/Pattern` (§8.7.3.3); `None` = no pattern selected
     /// (paints nothing) or a non-pattern space.
@@ -206,6 +211,8 @@ impl GraphicsState {
             fill_space: Rc::new(ColorSpace::DeviceGray),
             stroke_color: Color::BLACK,
             fill_color: Color::BLACK,
+            stroke_comps: vec![0.0],
+            fill_comps: vec![0.0],
             fill_pattern: None,
             stroke_pattern: None,
             fill_alpha: 1.0,
@@ -564,72 +571,198 @@ pub fn render_page(
         .resources()
         .cloned()
         .unwrap_or(Object::Dict(Default::default()));
-    let mut renderer = Renderer {
-        limits,
-        doc,
-        pixmap: &mut pixmap,
-        user_to_pix,
-        user_to_pix_exact,
-        gs: GraphicsState::new(),
-        gs_stack: Vec::new(),
-        path: CurrentPath::default(),
-        in_text: false,
-        text_clip: None,
-        resources,
-        xobject_depth: 0,
-        xobject_invocations: 0,
-        xobject_stack: Vec::new(),
-        text_tm: Matrix::IDENTITY,
-        text_tlm: Matrix::IDENTITY,
-        text_codes: 0,
-        extract: None,
-        annot_spans: Vec::new(),
-        annot_hidden: Vec::new(),
-        annot_recovered: Vec::new(),
-        extract_unicode_bytes: 0,
-        extraction_only: false,
-        glyph_bounds: true,
-        substitutions: Vec::new(),
-        color_approximations: Vec::new(),
-        image_approximations: Default::default(),
-        knockout_shape: 0,
-        dct_target: std::cell::Cell::new(None),
-        default_spaces: None,
-        layer_bytes: 0,
-        mask_bytes: Rc::default(),
-        dash_work: DashBudget::default(),
-        pattern_base: Matrix::IDENTITY,
-        pattern_depth: 0,
-        type3_depth: 0,
-        pattern_stack: Vec::new(),
-        pattern_tiles: 0,
-        uncolored_depth: 0,
-        texel_scale: 1.0,
-        device_to_target: Transform::identity(),
-        oc: crate::optcontent::OcConfig::from_catalog(doc)?,
-        oc_include_hidden: false,
-        mc_stack: Vec::new(),
-        hidden: 0,
+    let oc = crate::optcontent::OcConfig::from_catalog(doc)?;
+    // The work budgets one render may spend, carried from one painting of
+    // the page to the next (the DeviceCMYK passes, the RGB painting after
+    // abandoned ones): every painting counts.
+    let work = std::cell::RefCell::new(PageWork::default());
+    // One painting of the page — content, then annotation appearance
+    // streams *over* it in /Annots order (§12.5.5), each under a fresh
+    // graphics state — for `target`, with `live_bytes` of other buffers
+    // alive. Returns what it reports and, inside a DeviceCMYK page
+    // group, why its passes were abandoned.
+    let paint = |pixmap: &mut Pixmap,
+                 target: PaintTarget,
+                 live_bytes: u64,
+                 suppressed: bool|
+     -> Result<(PageReports, Option<String>), Error> {
+        let mut renderer = Renderer {
+            limits,
+            doc,
+            pixmap,
+            user_to_pix,
+            user_to_pix_exact,
+            gs: GraphicsState::new(),
+            gs_stack: Vec::new(),
+            path: CurrentPath::default(),
+            in_text: false,
+            text_clip: None,
+            resources: resources.clone(),
+            xobject_depth: 0,
+            xobject_invocations: 0,
+            xobject_stack: Vec::new(),
+            text_tm: Matrix::IDENTITY,
+            text_tlm: Matrix::IDENTITY,
+            text_codes: work.borrow().text_codes,
+            extract: None,
+            annot_spans: Vec::new(),
+            annot_hidden: Vec::new(),
+            annot_recovered: Vec::new(),
+            extract_unicode_bytes: work.borrow().extract_unicode_bytes,
+            extraction_only: false,
+            glyph_bounds: true,
+            substitutions: Vec::new(),
+            color_approximations: Vec::new(),
+            image_approximations: Default::default(),
+            knockout_shape: 0,
+            dct_target: std::cell::Cell::new(None),
+            default_spaces: None,
+            layer_bytes: live_bytes,
+            paint_target: target,
+            cmyk_regions: u32::from(target != PaintTarget::Rgb),
+            cmyk_fallback: None,
+            cmyk_suppressed: 0,
+            mask_bytes: Rc::default(),
+            dash_work: work.borrow().dash_work.clone(),
+            pattern_base: Matrix::IDENTITY,
+            pattern_depth: 0,
+            type3_depth: 0,
+            pattern_stack: Vec::new(),
+            pattern_tiles: work.borrow().pattern_tiles,
+            uncolored_depth: 0,
+            texel_scale: 1.0,
+            device_to_target: Transform::identity(),
+            oc: oc.clone(),
+            oc_include_hidden: false,
+            mc_stack: Vec::new(),
+            hidden: 0,
+        };
+        renderer.xobject_invocations = work.borrow().xobject_invocations;
+        renderer.cmyk_suppressed = u32::from(suppressed);
+        let r = renderer.repaint_colors().and_then(|()| {
+            renderer.run(&ops)?;
+            let page_resources = renderer.resources.clone();
+            renderer.draw_annotations(page, &page_resources)
+        });
+        *work.borrow_mut() = PageWork {
+            xobject_invocations: renderer.xobject_invocations,
+            text_codes: renderer.text_codes,
+            pattern_tiles: renderer.pattern_tiles,
+            extract_unicode_bytes: renderer.extract_unicode_bytes,
+            dash_work: renderer.dash_work.clone(),
+        };
+        let mut fallback = renderer.cmyk_fallback.take();
+        if fallback.is_none() && target != PaintTarget::Rgb && is_buffer_budget(&r) {
+            // The other pass's page buffer is alive: what fits in RGB may
+            // not fit beside it. RGB then, not an error.
+            fallback = Some("buffers over max_render_buffer_bytes".to_string());
+        }
+        if fallback.is_none() {
+            r?;
+        }
+        let reports = PageReports {
+            font_substitutions: std::mem::take(&mut renderer.substitutions),
+            color_approximations: std::mem::take(&mut renderer.color_approximations),
+            image_approximations: renderer.image_approximations.take(),
+        };
+        Ok((reports, fallback))
     };
-    renderer.run(&ops)?;
-    // Annotation appearance streams paint *over* the page content, in
-    // /Annots order (§12.5.5), each under a fresh graphics state.
-    let page_resources = renderer.resources.clone();
-    renderer.draw_annotations(page, &page_resources)?;
-    let font_substitutions = std::mem::take(&mut renderer.substitutions);
-    let color_approximations = std::mem::take(&mut renderer.color_approximations);
-    let image_approximations = renderer.image_approximations.take();
-    drop(renderer);
-    if transparent_page {
-        // C = (1 − αg)·W + αg·Cg on premultiplied pixels: c + (1 − α).
-        for px in pixmap.data_mut().as_chunks_mut::<4>().0 {
-            let white = 255 - px[3];
-            px[0] = px[0].saturating_add(white);
-            px[1] = px[1].saturating_add(white);
-            px[2] = px[2].saturating_add(white);
-            px[3] = 255;
+    // §11.4.7: the page group's /CS is the blending space of the page
+    // (honoured whatever /I says: a page imposed directly is isolated).
+    // DeviceCMYK: painted in two passes (`PaintTarget`) onto two
+    // transparent page buffers, each with both buffers' headroom and the
+    // document's reports and caches as before the first (so both take
+    // the same decisions; the work budgets count both), combined,
+    // converted, and only then composited on white paper. Anything the
+    // passes cannot paint, or the buffer budget reached in them → the
+    // whole page in RGB, as before, reported; another limit fails it.
+    let mut reports = None;
+    if let Some(cmyk) = page_group_cmyk(doc, page, &resources, limits)? {
+        let start = doc.work_mark();
+        let refusals = doc.budget_refusals();
+        let why = if let Err(why) = &cmyk {
+            Some(why.to_string())
+        } else if !buf_bytes
+            .checked_mul(2)
+            .is_some_and(|b| b <= limits.max_render_buffer_bytes)
+        {
+            Some("buffers over max_render_buffer_bytes".to_string())
+        } else {
+            // `paint` turns the buffer budget into a reason to paint in
+            // RGB; any other limit fails the render (its work was done).
+            let pass = |pixmap: &mut Pixmap, target| match paint(pixmap, target, buf_bytes, false) {
+                Ok((r, None)) => Ok(Ok(r)),
+                Ok((_, Some(why))) => Ok(Err(why)),
+                Err(e) => Err(e),
+            };
+            pixmap.fill(tiny_skia::Color::TRANSPARENT);
+            match pass(&mut pixmap, PaintTarget::CmykCmy)? {
+                Err(why) => Some(why),
+                Ok(r1) => {
+                    let after_first = doc.work_mark();
+                    doc.reset_work(&start);
+                    let mut k = Pixmap::new(width, height).ok_or_else(|| {
+                        Error::Structure(format!("cannot allocate {width}x{height} pixmap"))
+                    })?;
+                    match pass(&mut k, PaintTarget::CmykK)? {
+                        Err(why) => Some(why),
+                        Ok(_) if !combine_cmyk(&mut pixmap, &k) => {
+                            Some("its passes disagree on coverage".to_string())
+                        }
+                        Ok(_) => {
+                            doc.reset_work(&after_first);
+                            composite_on_white(&mut pixmap);
+                            let mut r1 = r1;
+                            if let Ok(Some(a)) = &cmyk {
+                                if !r1.color_approximations.contains(a) {
+                                    r1.color_approximations.push(a.clone());
+                                }
+                            }
+                            reports = Some(r1);
+                            None
+                        }
+                    }
+                }
+            }
+        };
+        if doc.budget_refusals() != refusals {
+            // A document budget refused a read in the passes and a
+            // reader went on with a default: the limit was reached.
+            return Err(doc.last_refusal().expect("a refusal was counted"));
+        }
+        if let Some(why) = why {
+            doc.reset_work(&start);
+            pixmap.fill(tiny_skia::Color::TRANSPARENT);
+            if !transparent_page {
+                pixmap.fill(ts_color(Color::WHITE));
+            }
+            // No group of the page attempts passes of its own.
+            let (mut r, _) = paint(&mut pixmap, PaintTarget::Rgb, 0, true)?;
+            let a = format!("DeviceCMYK blending colour space: blended in RGB ({why})");
+            if !r.color_approximations.contains(&a) {
+                r.color_approximations.push(a);
+            }
+            if transparent_page {
+                composite_on_white(&mut pixmap);
+            }
+            reports = Some(r);
         }
     }
+    let reports = match reports {
+        Some(r) => r,
+        None => {
+            let (r, _) = paint(&mut pixmap, PaintTarget::Rgb, 0, false)?;
+            if transparent_page {
+                composite_on_white(&mut pixmap);
+            }
+            r
+        }
+    };
+    let PageReports {
+        font_substitutions,
+        color_approximations,
+        image_approximations,
+    } = reports;
 
     Ok(RenderedPage {
         pixmap,
@@ -641,6 +774,94 @@ pub fn render_page(
         color_approximations,
         image_approximations,
     })
+}
+
+/// The work budgets spent by the paintings of one page so far.
+#[derive(Default)]
+struct PageWork {
+    xobject_invocations: u64,
+    text_codes: u64,
+    pattern_tiles: u64,
+    extract_unicode_bytes: u64,
+    dash_work: DashBudget,
+}
+
+/// What one painting of a page reports (`render_page`).
+struct PageReports {
+    font_substitutions: Vec<crate::fontsubst::FontSubstitution>,
+    color_approximations: Vec<String>,
+    image_approximations: Vec<String>,
+}
+
+/// §11.4.7: the page group composited on white paper — on
+/// premultiplied pixels C = c + (1 − α). (In a DeviceCMYK pass the
+/// channels are complements, white is 1 there too.)
+fn composite_on_white(pixmap: &mut Pixmap) {
+    for px in pixmap.data_mut().as_chunks_mut::<4>().0 {
+        let white = 255 - px[3];
+        px[0] = px[0].saturating_add(white);
+        px[1] = px[1].saturating_add(white);
+        px[2] = px[2].saturating_add(white);
+        px[3] = 255;
+    }
+}
+
+/// The page's /Group, when it is a transparency group whose /CS is a
+/// DeviceCMYK blending space (`is_cmyk_blend_space`) under the page's
+/// resources: `Ok(approximation)` to blend in it (an ICCBased space's
+/// note, if any), `Err(why)` when the page must be
+/// blended in RGB and reported (a knockout page group: its objects are
+/// not composited against the group's initial backdrop here). `None`
+/// otherwise — also when the /Group or /CS cannot be read, which keeps
+/// the page in RGB, as the page group's /CS was before it was read. A
+/// work limit reached while reading them is an error (`Err` outside).
+#[allow(clippy::type_complexity)]
+fn page_group_cmyk(
+    doc: &Document,
+    page: &Page,
+    resources: &Object,
+    limits: &Limits,
+) -> Result<Option<Result<Option<String>, &'static str>>, Error> {
+    // An error that is a work limit propagates; any other reads as
+    // "not readable": `None`.
+    fn read<T>(r: Result<T, Error>) -> Result<Option<T>, Error> {
+        match r {
+            Ok(v) => Ok(Some(v)),
+            Err(e @ Error::LimitExceeded { .. }) => Err(e),
+            Err(_) => Ok(None),
+        }
+    }
+    let Some(Some(g)) = read(page_dict_entry(doc, page, b"Group"))? else {
+        return Ok(None);
+    };
+    let Some(g) = read(doc.deref(&g))? else {
+        return Ok(None);
+    };
+    let Some(gd) = g.as_dict() else {
+        return Ok(None);
+    };
+    if gd.get(b"S".as_slice()).and_then(|o| o.as_name()) != Some(b"Transparency".as_slice()) {
+        return Ok(None);
+    }
+    let Some(cs) = gd.get(b"CS".as_slice()) else {
+        return Ok(None);
+    };
+    let Some(cs) = read(ColorSpace::parse(doc, cs, resources, limits))? else {
+        return Ok(None);
+    };
+    if !is_cmyk_blend_space(&cs) {
+        return Ok(None);
+    }
+    let knockout = match gd.get(b"K".as_slice()) {
+        Some(o) => read(doc.deref(o))?.and_then(|o| o.as_bool()),
+        None => None,
+    };
+    Ok(Some(if knockout == Some(true) {
+        Err("a knockout page group")
+    } else {
+        // An ICCBased space blended through its alternate.
+        Ok(cs.approximation())
+    }))
 }
 
 /// Encode a rendered pixmap as PNG bytes (RGBA8).
@@ -677,6 +898,10 @@ struct BlendScan<'a> {
     seen: std::collections::HashSet<IndirectRef>,
     budget: usize,
     exhausted: bool,
+    /// A document work limit reached while resolving (decoded bytes,
+    /// references): the scan stops as exhausted and keeps the error for
+    /// a caller that must not treat it as an unreadable entry.
+    limit: Option<Error>,
 }
 impl BlendScan<'_> {
     /// Resolve `o`, charging the budget; `None` for an object seen
@@ -698,6 +923,11 @@ impl BlendScan<'_> {
         match self.doc.deref_defined(o) {
             Ok(v) => Some(v),
             Err(Error::MissingReference(_)) => Some(Object::Null),
+            Err(e @ Error::LimitExceeded { .. }) => {
+                self.exhausted = true;
+                self.limit.get_or_insert(e);
+                None
+            }
             Err(_) => None,
         }
     }
@@ -760,15 +990,23 @@ impl BlendScan<'_> {
 }
 
 /// Whether a non-Normal blend mode is reachable from resources `res`
-/// (a tiling cell's): as `page_may_blend`, within the same budget.
-fn resources_may_blend(doc: &Document, res: &Object) -> bool {
+/// (a tiling cell's): as `page_may_blend`, within the same budget. A
+/// document work limit reached on the way is an error, not an answer:
+/// the scan decides how cells are painted, which must not depend on
+/// what an earlier painting left in the document's budgets.
+fn resources_may_blend(doc: &Document, res: &Object) -> Result<bool, Error> {
     let mut scan = BlendScan {
         doc,
         seen: std::collections::HashSet::new(),
         budget: BLEND_SCAN_BUDGET,
         exhausted: false,
+        limit: None,
     };
-    scan.resources(res)
+    let r = scan.resources(res);
+    match scan.limit {
+        Some(e) => Err(e),
+        None => Ok(r),
+    }
 }
 
 /// Whether anything on `page` can be painted with a blend mode other
@@ -785,6 +1023,7 @@ fn page_may_blend(doc: &Document, page: &Page) -> bool {
         seen: std::collections::HashSet::new(),
         budget: BLEND_SCAN_BUDGET,
         exhausted: false,
+        limit: None,
     };
     if let Some(res) = page.resources() {
         if scan.resources(res) {
@@ -1362,7 +1601,7 @@ fn dash_by_contour(
 /// What one render's dashed strokes have used of their budgets
 /// (`MAX_DASHED_PAGE_WORK`, `MAX_DASHED_RENDER_EDGES`). One per render,
 /// never reset during it.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct DashBudget {
     /// Σ of the strokes' row work.
     row_work: f64,
@@ -1914,6 +2153,21 @@ pub(crate) struct Renderer<'a> {
     /// Bytes of offscreen group layers currently alive — bounded by
     /// `max_render_buffer_bytes` together with the page pixmap.
     layer_bytes: u64,
+    /// How colours are painted: `Rgb`, or one of the two passes of a
+    /// DeviceCMYK blending space (`run_cmyk_group`, `render_page`).
+    paint_target: PaintTarget,
+    /// Nesting of DeviceCMYK two-pass regions (a page or group, and one
+    /// inside a soft mask computed within it): at most
+    /// `MAX_CMYK_REGIONS`.
+    cmyk_regions: u32,
+    /// Set when something inside a DeviceCMYK region cannot be painted
+    /// in its passes (`cmyk_unsupported`): the outermost region is then
+    /// painted again in RGB, as a whole.
+    cmyk_fallback: Option<String>,
+    /// Depth of DeviceCMYK regions being painted again in RGB after
+    /// their passes were abandoned: no group inside them starts passes of
+    /// its own (each region is attempted once, whatever its nesting).
+    cmyk_suppressed: u32,
     /// `dashed_stroke`'s work so far in this render, bounded by
     /// `MAX_DASHED_PAGE_WORK` and `MAX_DASHED_RENDER_EDGES`.
     dash_work: DashBudget,
@@ -1973,6 +2227,8 @@ struct McFrame {
 struct ShadingPattern {
     shading: Rc<Shading>,
     matrix: Matrix,
+    /// The paint target the shading's colours were converted for.
+    target: PaintTarget,
 }
 
 /// A `/PatternType 1` tiling pattern (§8.7.3): the cell content stream
@@ -1989,6 +2245,10 @@ struct TilingPattern {
     /// components through the base space), ignoring its own colour
     /// operators.
     under: Option<Color>,
+    /// `under`'s base space and components (the cell's fill colour).
+    under_src: Option<(Rc<ColorSpace>, Vec<f64>)>,
+    /// The paint target `under` was converted for.
+    target: PaintTarget,
     resources: Object,
     entry_ref: Option<IndirectRef>,
 }
@@ -2330,6 +2590,10 @@ impl<'a> Renderer<'a> {
             dct_target: std::cell::Cell::new(None),
             default_spaces: None,
             layer_bytes: 0,
+            paint_target: PaintTarget::Rgb,
+            cmyk_regions: 0,
+            cmyk_fallback: None,
+            cmyk_suppressed: 0,
             mask_bytes: Rc::default(),
             dash_work: DashBudget::default(),
             pattern_base: Matrix::IDENTITY,
@@ -3120,6 +3384,63 @@ impl<'a> Renderer<'a> {
         Ok(cs)
     }
 
+    /// The RGBA colour `comps` in `cs` is painted with under the current
+    /// paint target.
+    fn paint_color(&self, cs: &ColorSpace, comps: &[f64]) -> Result<Color, Error> {
+        color_in(cs, comps, self.paint_target)
+    }
+
+    /// Repaint the current fill and stroke colours for the current
+    /// paint target from their spaces and components — on entering a
+    /// pass of a DeviceCMYK region, whose colours were set outside it.
+    fn repaint_colors(&mut self) -> Result<(), Error> {
+        let (fs, fc) = (self.gs.fill_space.clone(), self.gs.fill_comps.clone());
+        let (ss, sc) = (self.gs.stroke_space.clone(), self.gs.stroke_comps.clone());
+        if !fs.is_pattern() {
+            self.gs.fill_color = self.paint_color(&fs, &fc)?;
+        }
+        if !ss.is_pattern() {
+            self.gs.stroke_color = self.paint_color(&ss, &sc)?;
+        }
+        Ok(())
+    }
+
+    /// Something inside a DeviceCMYK region that its passes cannot
+    /// paint exactly: outside a region nothing happens; inside, the
+    /// region is abandoned (`cmyk_fallback`) and an error unwinds to it,
+    /// where it is painted again as a whole in RGB.
+    fn cmyk_unsupported(&mut self, what: &str) -> Result<(), Error> {
+        if self.paint_target == PaintTarget::Rgb {
+            return Ok(());
+        }
+        if self.cmyk_fallback.is_none() {
+            self.cmyk_fallback = Some(what.to_string());
+        }
+        Err(Error::Unsupported {
+            feature: "DeviceCMYK blending colour space",
+            detail: what.to_string(),
+        })
+    }
+
+    /// A pattern carries colours converted for the paint target it was
+    /// selected under; painting it under another one is unsupported.
+    fn check_pattern_target(&mut self, pat: &PatternPaint) -> Result<(), Error> {
+        let t = match pat {
+            PatternPaint::Shading(sp) => sp.target,
+            PatternPaint::Tiling(tp) => tp.target,
+        };
+        if t != self.paint_target {
+            if self.paint_target == PaintTarget::Rgb {
+                // A pattern selected inside a region, painted after it.
+                return Err(Error::Structure(
+                    "pattern selected inside a DeviceCMYK group painted outside it".into(),
+                ));
+            }
+            return self.cmyk_unsupported("a pattern selected outside the group");
+        }
+        Ok(())
+    }
+
     /// `G`/`RG`/`K` and their lowercase forms: select the device
     /// space and set the colour in one step.
     fn select_device_color(
@@ -3129,13 +3450,15 @@ impl<'a> Renderer<'a> {
         stroke: bool,
     ) -> Result<(), Error> {
         let cs = self.device_space(idx)?;
-        let color = color_in(&cs, comps)?;
+        let color = self.paint_color(&cs, comps)?;
         if stroke {
             self.gs.stroke_space = cs;
             self.gs.stroke_color = color;
+            self.gs.stroke_comps = comps.to_vec();
         } else {
             self.gs.fill_space = cs;
             self.gs.fill_color = color;
+            self.gs.fill_comps = comps.to_vec();
         }
         Ok(())
     }
@@ -3151,14 +3474,17 @@ impl<'a> Renderer<'a> {
         )?;
         self.note_approximation(&cs);
         let cs = Rc::new(cs);
-        let color = color_in(&cs, &cs.initial_components())?;
+        let comps = cs.initial_components();
+        let color = self.paint_color(&cs, &comps)?;
         if stroke {
             self.gs.stroke_space = cs;
             self.gs.stroke_color = color;
+            self.gs.stroke_comps = comps;
             self.gs.stroke_pattern = None;
         } else {
             self.gs.fill_space = cs;
             self.gs.fill_color = color;
+            self.gs.fill_comps = comps;
             self.gs.fill_pattern = None;
         }
         Ok(())
@@ -3228,11 +3554,13 @@ impl<'a> Renderer<'a> {
                 nums.len()
             )));
         }
-        let color = color_in(&space, &nums)?;
+        let color = self.paint_color(&space, &nums)?;
         if stroke {
             self.gs.stroke_color = color;
+            self.gs.stroke_comps = nums;
         } else {
             self.gs.fill_color = color;
+            self.gs.fill_comps = nums;
         }
         Ok(())
     }
@@ -3370,6 +3698,11 @@ impl<'a> Renderer<'a> {
                 }
                 b"BM" => {
                     self.gs.blend_mode = parse_blend_mode(v)?;
+                    if !is_separable_blend(self.gs.blend_mode) {
+                        // §11.3.5.3 takes K from one operand in CMYK:
+                        // not a per-channel operation on the passes.
+                        self.cmyk_unsupported("a non-separable blend mode")?;
+                    }
                 }
 
                 // ---- accepted no-ops (spec-tolerable) ---------------
@@ -3789,6 +4122,9 @@ impl<'a> Renderer<'a> {
         //  * knockout groups need per-object backdrop replacement →
         //    refused.
         let mut group = GroupMode::None;
+        // The group's /CS (§11.4.7, Table 147), parsed below under the
+        // form's own resources (Default spaces remap device names).
+        let mut group_cs: Option<Object> = None;
         if let Some(g) = dict.get(b"Group".as_slice()) {
             let g = self.doc.deref(g)?;
             let gd = g
@@ -3804,8 +4140,21 @@ impl<'a> Renderer<'a> {
                     ),
                 });
             }
-            let knockout = gd.get(b"K".as_slice()).and_then(|o| o.as_bool()) == Some(true);
-            let isolated = gd.get(b"I".as_slice()).and_then(|o| o.as_bool()) == Some(true);
+            let flag = |key: &[u8]| -> Result<bool, Error> {
+                Ok(match gd.get(key) {
+                    Some(o) => self.doc.deref(o)?.as_bool() == Some(true),
+                    None => false,
+                })
+            };
+            let knockout = flag(b"K")?;
+            let isolated = flag(b"I")?;
+            // Table 147: /CS is for isolated groups; a non-isolated
+            // group's is not read (its parent's space is its own).
+            group_cs = match gd.get(b"CS".as_slice()) {
+                None | Some(Object::Null) => None,
+                Some(_) if !isolated => None,
+                Some(o) => Some(o.clone()),
+            };
             let opaque_normal = self.gs.fill_alpha >= 1.0
                 && self.gs.stroke_alpha >= 1.0
                 && self.gs.blend_mode == tiny_skia::BlendMode::SourceOver
@@ -3913,9 +4262,18 @@ impl<'a> Renderer<'a> {
                 }
                 ops
             };
+            let space = match &group_cs {
+                Some(o) if group != GroupMode::None => self.blend_space(o)?,
+                _ => BlendSpace::Inherited,
+            };
+            let cmyk = self.enter_group_space(group, space)?;
             self.xobject_depth += 1;
             let r = match group {
                 GroupMode::None | GroupMode::Inline => self.run(&ops),
+                GroupMode::Layer { isolated, knockout } if cmyk => {
+                    debug_assert!(isolated && !knockout);
+                    self.run_cmyk_group(&ops)
+                }
                 GroupMode::Layer { isolated, knockout } => {
                     self.run_in_layer(&ops, isolated, knockout)
                 }
@@ -3931,6 +4289,308 @@ impl<'a> Renderer<'a> {
         }
         self.gs = self.gs_stack.pop().expect("pushed above");
         run_result
+    }
+
+    /// A group's `/CS` as a blending space: DeviceCMYK (also through
+    /// `/DefaultCMYK`, or an ICCBased N = 4 space rendered through its
+    /// alternate, as every colour in it is) or another space.
+    /// A /CS that cannot be read is another space: the group blends in
+    /// RGB, as when /CS was not read at all.
+    fn blend_space(&mut self, cs: &Object) -> Result<BlendSpace, Error> {
+        let cs = match ColorSpace::parse(self.doc, cs, &self.resources, self.limits) {
+            Ok(cs) => cs,
+            // A work limit (decoded bytes, references) is not an
+            // unreadable /CS: it ends the render, as anywhere else.
+            Err(e @ Error::LimitExceeded { .. }) => return Err(e),
+            Err(_) => return Ok(BlendSpace::Other),
+        };
+        Ok(if is_cmyk_blend_space(&cs) {
+            // An ICCBased space blended through its alternate.
+            self.note_approximation(&cs);
+            BlendSpace::Cmyk
+        } else {
+            BlendSpace::Other
+        })
+    }
+
+    /// What a group with blending space `space` does to the paint
+    /// target; `true` when it is a DeviceCMYK region of its own, to be
+    /// painted by `run_cmyk_group`. Outside a region only an isolated,
+    /// non-knockout group's /CS is honoured (Table 147: /CS is for
+    /// isolated groups; a knockout DeviceCMYK group is blended in RGB
+    /// and reported). Inside one, a group in another space cannot be
+    /// painted in the passes.
+    fn enter_group_space(&mut self, group: GroupMode, space: BlendSpace) -> Result<bool, Error> {
+        let (isolated, knockout) = match group {
+            GroupMode::None => return Ok(false),
+            GroupMode::Inline => (false, false),
+            GroupMode::Layer { isolated, knockout } => (isolated, knockout),
+        };
+        if self.extraction_only {
+            return Ok(false);
+        }
+        if self.paint_target == PaintTarget::Rgb {
+            if space != BlendSpace::Cmyk {
+                return Ok(false);
+            }
+            if knockout && isolated {
+                self.note_cmyk_approximation("a knockout group");
+                return Ok(false);
+            }
+            if isolated && self.cmyk_suppressed > 0 {
+                // Inside a region painted in RGB after its passes were
+                // abandoned: one attempt per region.
+                self.note_cmyk_approximation("inside a group blended in RGB");
+                return Ok(false);
+            }
+            return Ok(isolated);
+        }
+        if knockout {
+            self.cmyk_unsupported("a knockout group")?;
+        }
+        if isolated && space == BlendSpace::Other {
+            self.cmyk_unsupported("an isolated group in another colour space")?;
+        }
+        Ok(false)
+    }
+
+    /// Report that a DeviceCMYK blending space was blended in RGB.
+    fn note_cmyk_approximation(&mut self, why: &str) {
+        let a = format!("DeviceCMYK blending colour space: blended in RGB ({why})");
+        if !self.color_approximations.contains(&a) {
+            self.color_approximations.push(a);
+        }
+    }
+
+    /// An isolated transparency group whose blending space is
+    /// DeviceCMYK, entered from RGB (§11.3.4, §11.4.7): painted twice
+    /// onto transparent layers, the colours as the complements of their
+    /// CMYK components (`PaintTarget`), combined by `combine_cmyk` and
+    /// composited once like any isolated group. Whatever the passes
+    /// cannot paint (`cmyk_unsupported`) makes the whole group be
+    /// painted again in RGB, as before, and reported.
+    fn run_cmyk_group(&mut self, ops: &[Operation]) -> Result<(), Error> {
+        let (w, h) = (self.pixmap.width(), self.pixmap.height());
+        let bytes = w as u64 * h as u64 * 4;
+        // The page pixmap, the two pass layers (pass 1's alive while
+        // pass 2 paints) within the budget; otherwise RGB, reported.
+        if self.cmyk_regions >= MAX_CMYK_REGIONS
+            || self
+                .layer_bytes
+                .saturating_add(bytes)
+                .saturating_add(bytes * 2)
+                > self.limits.max_render_buffer_bytes
+        {
+            let why = if self.cmyk_regions >= MAX_CMYK_REGIONS {
+                "nested too deep"
+            } else {
+                "buffers over max_render_buffer_bytes"
+            };
+            self.note_cmyk_approximation(why);
+            return self.run_in_layer(ops, true, false);
+        }
+        let alpha = self.gs.fill_alpha;
+        let bm = self.gs.blend_mode;
+        let mask = self.gs.soft_mask.clone();
+        let saved = (self.gs.clone(), self.gs_stack.len());
+        match self.cmyk_passes(ops, w, h, bytes)? {
+            Some(layer) => {
+                self.gs = saved.0;
+                self.gs_stack.truncate(saved.1);
+                self.composite_layer(&layer, alpha, bm, mask.as_deref().map(|m| &m.mask));
+                Ok(())
+            }
+            None => {
+                self.gs = saved.0;
+                self.gs_stack.truncate(saved.1);
+                self.cmyk_suppressed += 1;
+                let r = self.run_in_layer(ops, true, false);
+                self.cmyk_suppressed -= 1;
+                r
+            }
+        }
+    }
+
+    /// What a painting has added so far that a repeat of it would add
+    /// again — its reports, the document's warnings and the caches it
+    /// filled — to repeat it from the same point (`reset_work`).
+    fn work_mark(&self) -> RendererMark {
+        RendererMark {
+            substitutions: self.substitutions.len(),
+            color_approximations: self.color_approximations.len(),
+            image_approximations: self.image_approximations.borrow().len(),
+            doc: self.doc.work_mark(),
+        }
+    }
+
+    fn interp_mark(&self) -> InterpMark {
+        InterpMark {
+            path: self.path.clone(),
+            in_text: self.in_text,
+            text_clip: self.text_clip.clone(),
+            text_tm: self.text_tm,
+            text_tlm: self.text_tlm,
+            resources: self.resources.clone(),
+            xobject_depth: self.xobject_depth,
+            xobject_stack: self.xobject_stack.len(),
+            pattern_base: self.pattern_base,
+            pattern_depth: self.pattern_depth,
+            type3_depth: self.type3_depth,
+            pattern_stack: self.pattern_stack.len(),
+            uncolored_depth: self.uncolored_depth,
+            knockout_shape: self.knockout_shape,
+            texel_scale: self.texel_scale,
+            device_to_target: self.device_to_target,
+            user_to_pix: self.user_to_pix,
+            user_to_pix_exact: self.user_to_pix_exact,
+            oc_include_hidden: self.oc_include_hidden,
+            mc_stack: self.mc_stack.clone(),
+            hidden: self.hidden,
+            layer_bytes: self.layer_bytes,
+        }
+    }
+
+    fn reset_interp(&mut self, m: &InterpMark) {
+        self.path = m.path.clone();
+        self.in_text = m.in_text;
+        self.text_clip = m.text_clip.clone();
+        self.text_tm = m.text_tm;
+        self.text_tlm = m.text_tlm;
+        self.swap_resources(m.resources.clone());
+        self.xobject_depth = m.xobject_depth;
+        self.xobject_stack.truncate(m.xobject_stack);
+        self.pattern_base = m.pattern_base;
+        self.pattern_depth = m.pattern_depth;
+        self.type3_depth = m.type3_depth;
+        self.pattern_stack.truncate(m.pattern_stack);
+        self.uncolored_depth = m.uncolored_depth;
+        self.knockout_shape = m.knockout_shape;
+        self.texel_scale = m.texel_scale;
+        self.device_to_target = m.device_to_target;
+        self.user_to_pix = m.user_to_pix;
+        self.user_to_pix_exact = m.user_to_pix_exact;
+        self.oc_include_hidden = m.oc_include_hidden;
+        self.mc_stack = m.mc_stack.clone();
+        self.hidden = m.hidden;
+        self.layer_bytes = m.layer_bytes;
+    }
+
+    fn reset_work(&mut self, m: &RendererMark) {
+        self.substitutions.truncate(m.substitutions);
+        self.color_approximations.truncate(m.color_approximations);
+        self.image_approximations
+            .borrow_mut()
+            .truncate(m.image_approximations);
+        self.doc.reset_work(&m.doc);
+    }
+
+    /// Run `ops` once per pass onto transparent `w × h` layers and
+    /// combine them; `None` when the passes were abandoned (reported).
+    /// Both passes start from the same state and buffer headroom (both
+    /// layers counted in each), so they take the same decisions — no
+    /// decision depends on the work budgets, which count both passes and
+    /// any abandoned attempt and only ever fail a render. The buffer
+    /// budget, which counts live memory, abandons the passes when it is
+    /// reached (RGB needs one layer fewer); any other limit fails the
+    /// render, as the work it bounds was done.
+    fn cmyk_passes(
+        &mut self,
+        ops: &[Operation],
+        w: u32,
+        h: u32,
+        bytes: u64,
+    ) -> Result<Option<Pixmap>, Error> {
+        let saved = (self.gs.clone(), self.gs_stack.len());
+        let interp = self.interp_mark();
+        let start = self.work_mark();
+        let refusals = self.doc.budget_refusals();
+        let mut after_first = None;
+        let outer = self.cmyk_fallback.take();
+        self.cmyk_regions += 1;
+        let mut layers = Vec::with_capacity(2);
+        let mut failure = None;
+        let mut error = None;
+        for target in [PaintTarget::CmykCmy, PaintTarget::CmykK] {
+            let Some(mut layer) = Pixmap::new(w, h) else {
+                error = Some(Error::Structure(
+                    "cannot allocate transparency-group layer".into(),
+                ));
+                break;
+            };
+            self.gs = saved.0.clone();
+            self.gs_stack.truncate(saved.1);
+            self.reset_interp(&interp);
+            self.reset_work(&start);
+            // Inside the group: alpha constants 1, Normal, no soft
+            // mask (§11.6.6), as `run_in_layer` sets them.
+            self.clear_soft_mask();
+            self.gs.fill_alpha = 1.0;
+            self.gs.stroke_alpha = 1.0;
+            self.gs.blend_mode = tiny_skia::BlendMode::SourceOver;
+            let prev = std::mem::replace(&mut self.paint_target, target);
+            let r = self.repaint_colors().and_then(|()| {
+                std::mem::swap(&mut *self.pixmap, &mut layer);
+                self.layer_bytes += bytes * 2;
+                let r = self.run(ops);
+                self.layer_bytes -= bytes * 2;
+                std::mem::swap(&mut *self.pixmap, &mut layer);
+                r
+            });
+            self.paint_target = prev;
+            if let Some(why) = self.cmyk_fallback.take() {
+                failure = Some(why);
+                break;
+            }
+            match r {
+                Ok(()) => {}
+                Err(Error::LimitExceeded {
+                    limit: "max_render_buffer_bytes",
+                    ..
+                }) => {
+                    failure = Some("buffers over max_render_buffer_bytes".to_string());
+                    break;
+                }
+                Err(e) => {
+                    error = Some(e);
+                    break;
+                }
+            }
+            if after_first.is_none() {
+                after_first = Some(self.work_mark());
+            }
+            layers.push(layer);
+        }
+        self.cmyk_regions -= 1;
+        self.cmyk_fallback = outer;
+        self.gs = saved.0;
+        self.gs_stack.truncate(saved.1);
+        self.reset_interp(&interp);
+        if error.is_none() && self.doc.budget_refusals() != refusals {
+            // A document budget refused a read in the passes and a reader
+            // went on with a default: the passes may not have painted the
+            // same thing. The limit was reached: the render fails.
+            error = self.doc.last_refusal();
+        }
+        if let Some(e) = error {
+            // Not a reason to paint in RGB: the render fails, from the
+            // state the passes started from.
+            self.reset_work(&start);
+            return Err(e);
+        }
+        if failure.is_none() {
+            let k = layers.pop().expect("two passes");
+            let mut cmy = layers.pop().expect("two passes");
+            if combine_cmyk(&mut cmy, &k) {
+                self.reset_work(after_first.as_ref().expect("first pass done"));
+                return Ok(Some(cmy));
+            }
+            failure = Some("its passes disagree on coverage".to_string());
+        }
+        self.reset_work(&start);
+        if let Some(why) = failure {
+            self.note_cmyk_approximation(&why);
+        }
+        Ok(None)
     }
 
     /// Paint a transparency group's `ops` offscreen and composite the
@@ -4530,6 +5190,7 @@ impl<'a> Renderer<'a> {
             // Fresh state per annotation: page content state, text
             // matrices and any leftover gsave stack do not leak in.
             self.gs = GraphicsState::new();
+            self.repaint_colors()?;
             self.gs.ctm = a;
             // A synthesised markup appearance is a transparency group
             // composited once with the annotation's /CA (and /Multiply
@@ -4768,7 +5429,12 @@ impl<'a> Renderer<'a> {
         );
         std::mem::swap(&mut *self.pixmap, &mut layer);
         self.layer_bytes += bytes;
+        // A mask is alpha, the same in every pass of a DeviceCMYK region
+        // it is used in: its group is painted in RGB, as outside one (a
+        // DeviceCMYK group inside it is a region of its own).
+        let prev_target = std::mem::replace(&mut self.paint_target, PaintTarget::Rgb);
         let r = self.do_form(gdict, graw, b"soft mask group", g_ref);
+        self.paint_target = prev_target;
         self.layer_bytes -= bytes;
         std::mem::swap(&mut *self.pixmap, &mut layer);
         self.gs = saved_gs;
@@ -5445,7 +6111,7 @@ impl<'a> Renderer<'a> {
             _ => None,
         };
         let paints_nothing = cs.paints_nothing();
-        let mut conv = SampleConverter::new(cs.clone(), bpc, &decode)?;
+        let mut conv = SampleConverter::new(cs.clone(), bpc, &decode, self.paint_target)?;
         let mut comps = vec![0u32; ncomps];
         // /SMaskInData 2 (Table 87, §7.4.9): the colour channels are
         // premultiplied with the opacity channel — preblended with a
@@ -6364,7 +7030,13 @@ impl<'a> Renderer<'a> {
                     show_name(name)
                 ))
             })?;
-        let sh = parse_shading(self.doc, &obj, &self.resources, self.limits)?;
+        let sh = parse_shading(
+            self.doc,
+            &obj,
+            &self.resources,
+            self.limits,
+            self.paint_target,
+        )?;
         if let Some(a) = &sh.approximation {
             if !self.color_approximations.contains(a) {
                 self.color_approximations.push(a.clone());
@@ -6438,7 +7110,13 @@ impl<'a> Renderer<'a> {
         let sh_obj = dict
             .get(b"Shading".as_slice())
             .ok_or_else(|| Error::Structure("shading pattern has no /Shading".into()))?;
-        let shading = parse_shading(self.doc, sh_obj, &self.resources, self.limits)?;
+        let shading = parse_shading(
+            self.doc,
+            sh_obj,
+            &self.resources,
+            self.limits,
+            self.paint_target,
+        )?;
         if !self.extraction_only {
             if let Some(a) = &shading.approximation {
                 if !self.color_approximations.contains(a) {
@@ -6449,6 +7127,7 @@ impl<'a> Renderer<'a> {
         Ok(Rc::new(PatternPaint::Shading(Rc::new(ShadingPattern {
             shading: Rc::new(shading),
             matrix,
+            target: self.paint_target,
         }))))
     }
 
@@ -6472,6 +7151,7 @@ impl<'a> Renderer<'a> {
                 show_name(name)
             ))
         })?;
+        let mut under_src = None;
         let under = match pdict.get(b"PaintType".as_slice()).and_then(|o| o.as_i64()) {
             Some(1) => None,
             Some(2) => {
@@ -6492,7 +7172,9 @@ impl<'a> Renderer<'a> {
                         comps.len()
                     )));
                 }
-                Some(color_in(&base, comps)?)
+                let c = self.paint_color(&base, comps)?;
+                under_src = Some((base, comps.to_vec()));
+                Some(c)
             }
             other => {
                 return Err(Error::Structure(format!(
@@ -6557,6 +7239,8 @@ impl<'a> Renderer<'a> {
             xstep,
             ystep,
             under,
+            under_src,
+            target: self.paint_target,
             resources,
             entry_ref,
         })
@@ -6575,6 +7259,7 @@ impl<'a> Renderer<'a> {
         rule: FillRule,
         ts: Transform,
     ) -> Result<(), Error> {
+        self.check_pattern_target(&pat)?;
         if device_extent(path, ts, self.pixmap.width(), self.pixmap.height(), false)?
             == Extent::Outside
         {
@@ -6638,6 +7323,7 @@ impl<'a> Renderer<'a> {
     /// Paint `pat` wherever `mask` has coverage (the mask already
     /// includes the clip).
     fn paint_pattern_under_mask(&mut self, pat: &PatternPaint, mask: Mask) -> Result<(), Error> {
+        self.check_pattern_target(pat)?;
         match pat {
             PatternPaint::Shading(sp) => {
                 let to_page = sp.matrix.concat(self.pattern_base);
@@ -6759,7 +7445,7 @@ impl<'a> Renderer<'a> {
         // (source-over, which the texture uses, composes either way).
         let wrapped =
             tiling_reach(bb.urx - bb.llx, tp.xstep) * tiling_reach(bb.ury - bb.lly, tp.ystep);
-        let texture = (cell_w.is_finite()
+        let eligible = cell_w.is_finite()
             && cell_h.is_finite()
             && cell_w >= 1e-3
             && cell_h >= 1e-3
@@ -6767,9 +7453,24 @@ impl<'a> Renderer<'a> {
             && wrapped < tiles
             && (wrapped == 1.0
                 || (self.gs.blend_mode == tiny_skia::BlendMode::SourceOver
-                    && !resources_may_blend(self.doc, &tp.resources))))
-        .then(|| self.texture_plan(cell_w, cell_h))
-        .flatten();
+                    && !resources_may_blend(self.doc, &tp.resources)?));
+        let texture = eligible.then(|| self.texture_plan(cell_w, cell_h));
+        // Inside a DeviceCMYK region — in its passes, or in a soft mask
+        // computed in one (painted in RGB, the passes' layers still live).
+        if matches!(texture, Some(None))
+            && self.cmyk_regions > 0
+            && self.texture_plan_unbudgeted(cell_w, cell_h)
+        {
+            // The texture is refused only for the buffer budget, which
+            // the passes' extra layer takes: painting the cells one by one
+            // instead would be another rendering than the RGB one. The
+            // region goes to RGB (`is_buffer_budget`).
+            return Err(Error::LimitExceeded {
+                limit: "max_render_buffer_bytes",
+                max: self.limits.max_render_buffer_bytes,
+            });
+        }
+        let texture = texture.flatten();
         let direct = texture.is_none();
         {
             let n = if direct { tiles as u64 } else { wrapped as u64 };
@@ -6959,13 +7660,26 @@ impl<'a> Renderer<'a> {
 
     /// Fresh graphics state for one cell: `ctm` as the CTM, the outer
     /// fill colour for an uncoloured pattern, `clip` as the clip.
-    fn reset_cell_state(&mut self, tp: &TilingPattern, ctm: Matrix, clip: Option<Rc<GsMask>>) {
+    fn reset_cell_state(
+        &mut self,
+        tp: &TilingPattern,
+        ctm: Matrix,
+        clip: Option<Rc<GsMask>>,
+    ) -> Result<(), Error> {
         self.gs = GraphicsState::new();
         self.gs.ctm = ctm;
         if let Some(u) = tp.under {
             self.gs.fill_color = u;
             self.gs.stroke_color = u;
         }
+        if let Some((space, comps)) = &tp.under_src {
+            self.gs.fill_space = space.clone();
+            self.gs.stroke_space = space.clone();
+            self.gs.fill_comps = comps.clone();
+            self.gs.stroke_comps = comps.clone();
+        }
+        // The fresh state's black (or `under`) for the paint target.
+        self.repaint_colors()?;
         self.gs.clip = clip;
         self.gs_stack.clear();
         self.pattern_base = ctm;
@@ -6973,6 +7687,7 @@ impl<'a> Renderer<'a> {
         self.text_tm = Matrix::IDENTITY;
         self.text_tlm = Matrix::IDENTITY;
         self.path = CurrentPath::default();
+        Ok(())
     }
 
     /// Execute the cell content once per tile, each under `mask` ∩
@@ -7035,7 +7750,7 @@ impl<'a> Renderer<'a> {
                 {
                     continue;
                 }
-                self.reset_cell_state(tp, cell, Some(cell_clip.clone()));
+                self.reset_cell_state(tp, cell, Some(cell_clip.clone()))?;
                 self.gs.fill_alpha = alpha.0;
                 self.gs.stroke_alpha = alpha.1;
                 self.gs.blend_mode = alpha.2;
@@ -7053,7 +7768,17 @@ impl<'a> Renderer<'a> {
     /// [`TEXTURE_MIN`] pixels each way; `None` when its texels exceed
     /// [`TEXTURE_MAX_TEXELS`] or the render's buffer budget (the tiles
     /// are then executed one by one).
+    /// Whether `texture_plan` would give a texture with no buffer
+    /// budget.
+    fn texture_plan_unbudgeted(&self, cell_w: f32, cell_h: f32) -> bool {
+        self.texture_plan_within(cell_w, cell_h, u64::MAX).is_some()
+    }
+
     fn texture_plan(&self, cell_w: f32, cell_h: f32) -> Option<TexturePlan> {
+        self.texture_plan_within(cell_w, cell_h, self.limits.max_render_buffer_bytes)
+    }
+
+    fn texture_plan_within(&self, cell_w: f32, cell_h: f32, budget: u64) -> Option<TexturePlan> {
         let area = cell_w as f64 * cell_h as f64;
         let scale = if self.texel_scale > 1.0 {
             1.0
@@ -7073,9 +7798,7 @@ impl<'a> Renderer<'a> {
         }
         let bytes = texture_bytes(width, height);
         let page = self.pixmap.width() as u64 * self.pixmap.height() as u64 * 4;
-        if self.layer_bytes.saturating_add(page).saturating_add(bytes)
-            > self.limits.max_render_buffer_bytes
-        {
+        if self.layer_bytes.saturating_add(page).saturating_add(bytes) > budget {
             return None;
         }
         Some(TexturePlan { width, height })
@@ -7177,7 +7900,7 @@ impl<'a> Renderer<'a> {
             for dj in (1 - ny)..=0 {
                 for di in (1 - nx)..=0 {
                     let at = Matrix::translate(di as f64 * tp.xstep, dj as f64 * tp.ystep);
-                    self.reset_cell_state(tp, at, None);
+                    self.reset_cell_state(tp, at, None)?;
                     if per_cell {
                         self.gs.fill_alpha = alpha.0;
                         self.gs.stroke_alpha = alpha.1;
@@ -8662,7 +9385,7 @@ fn adjusted_stroke(
 }
 
 /// How a form's transparency group is rendered (see `do_form`).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum GroupMode {
     /// Not a transparency group.
     None,
@@ -8674,11 +9397,144 @@ enum GroupMode {
     Layer { isolated: bool, knockout: bool },
 }
 
-/// Colour components → RGBA8 through `cs`. A `/None` Separation
+/// A transparency group's blending colour space (/CS).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BlendSpace {
+    /// No /CS: the parent's.
+    Inherited,
+    Cmyk,
+    Other,
+}
+
+/// The interpreter's state outside the graphics state — what a content
+/// stream changes and restores as it runs — read by
+/// `Renderer::interp_mark`: a pass abandoned part-way (an error unwinds
+/// it) is undone with it before the region is painted again.
+struct InterpMark {
+    path: CurrentPath,
+    in_text: bool,
+    text_clip: Option<PathBuilder>,
+    text_tm: Matrix,
+    text_tlm: Matrix,
+    resources: Object,
+    xobject_depth: u32,
+    xobject_stack: usize,
+    pattern_base: Matrix,
+    pattern_depth: u32,
+    type3_depth: u32,
+    pattern_stack: usize,
+    uncolored_depth: u32,
+    knockout_shape: u32,
+    texel_scale: f64,
+    device_to_target: Transform,
+    user_to_pix: Transform,
+    user_to_pix_exact: Matrix,
+    oc_include_hidden: bool,
+    mc_stack: Vec<McFrame>,
+    hidden: u32,
+    layer_bytes: u64,
+}
+
+/// What `Renderer::work_mark` reads: the reports a painting adds and
+/// the document's warnings and caches — not the work it did. The work
+/// budgets (Do invocations, text codes, pattern tiles, dashed-stroke
+/// work, the document's decoded bytes and reference resolutions) count
+/// every pass and every abandoned attempt: they bound the work a render
+/// really does, so nothing is refunded.
+struct RendererMark {
+    substitutions: usize,
+    color_approximations: usize,
+    image_approximations: usize,
+    doc: crate::document::WorkMark,
+}
+
+/// `r` failed on the render buffer budget.
+fn is_buffer_budget<T>(r: &Result<T, Error>) -> bool {
+    matches!(
+        r,
+        Err(Error::LimitExceeded {
+            limit: "max_render_buffer_bytes",
+            ..
+        })
+    )
+}
+
+/// Nesting of DeviceCMYK two-pass regions: a page or group, and one
+/// inside a soft mask computed within it. Each level doubles the work
+/// of what it contains.
+const MAX_CMYK_REGIONS: u32 = 2;
+
+/// DeviceCMYK as a blending space: itself, or an ICCBased N = 4 space
+/// whose profile is not evaluated (its colours render through the
+/// alternate, DeviceCMYK).
+fn is_cmyk_blend_space(cs: &ColorSpace) -> bool {
+    match cs {
+        ColorSpace::DeviceCMYK => true,
+        ColorSpace::IccBased {
+            n: 4,
+            profile,
+            alternate,
+            ..
+        } => profile.is_none() && is_cmyk_blend_space(alternate),
+        _ => false,
+    }
+}
+
+/// §11.3.4 / §10.3.5: the two passes of a DeviceCMYK group → its RGB
+/// result, in place in `cmy`; `false` (nothing changed) unless both
+/// have the same alpha and the K pass's three channels are equal at
+/// every pixel (same shapes, opacity and blend per channel). Per pixel
+/// with α > 0:
+/// C = 1 − r₁/α, M = 1 − g₁/α, Y = 1 − b₁/α, K = 1 − r₂/α, converted by
+/// §10.3.5 and premultiplied again. α = 0 stays transparent.
+fn combine_cmyk(cmy: &mut Pixmap, k: &Pixmap) -> bool {
+    // The passes paint the same shapes with the same opacity: their
+    // alpha agrees everywhere, or they cannot be combined.
+    if cmy
+        .data()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(k.data().as_chunks::<4>().0)
+        .any(|(p, q)| p[3] != q[3] || q[0] != q[1] || q[0] != q[2])
+    {
+        return false;
+    }
+    for (p, q) in cmy
+        .data_mut()
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(k.data().as_chunks::<4>().0)
+    {
+        let a = p[3];
+        if a == 0 {
+            *p = [0; 4];
+            continue;
+        }
+        let af = a as f64;
+        let un = |v: u8| (v as f64 / af).min(1.0);
+        let cmyk = [
+            1.0 - un(p[0]),
+            1.0 - un(p[1]),
+            1.0 - un(p[2]),
+            1.0 - un(q[0]),
+        ];
+        // The conversion every DeviceCMYK colour gets (infallible for
+        // DeviceCMYK).
+        let rgb = ColorSpace::DeviceCMYK.to_rgb(&cmyk).unwrap_or([0.0; 3]);
+        for (d, v) in p.iter_mut().zip(rgb) {
+            *d = (v * af).round().clamp(0.0, af) as u8;
+        }
+    }
+    true
+}
+
+/// Colour components → RGBA8 through `cs`, painted for `target`. A `/None` Separation
 /// yields alpha 0 — painting with it marks nothing, exactly as
 /// §8.6.6.4 requires.
-fn color_in(cs: &ColorSpace, comps: &[f64]) -> Result<Color, Error> {
-    let [r, g, b] = cs.to_rgb(comps)?;
+fn color_in(cs: &ColorSpace, comps: &[f64], target: PaintTarget) -> Result<Color, Error> {
+    let [r, g, b] = target.rgb(cs, comps)?;
     let mut c = rgb_to_rgba(r, g, b);
     if cs.paints_nothing() {
         c.a = 0;
@@ -8894,6 +9750,7 @@ fn blend_non_separable(bm: tiny_skia::BlendMode, cs: [f64; 3], cb: [f64; 3]) -> 
 /// transforms and ICC curves are far too slow to run per pixel).
 struct SampleConverter {
     cs: Rc<ColorSpace>,
+    target: PaintTarget,
     maxv: f64,
     decode: Vec<(f64, f64)>,
     lut: Option<Vec<[u8; 3]>>,
@@ -8905,11 +9762,17 @@ struct SampleConverter {
 impl SampleConverter {
     const CACHE_MAX: usize = 1 << 16;
 
-    fn new(cs: Rc<ColorSpace>, bpc: u32, decode: &[(f64, f64)]) -> Result<Self, Error> {
+    fn new(
+        cs: Rc<ColorSpace>,
+        bpc: u32,
+        decode: &[(f64, f64)],
+        target: PaintTarget,
+    ) -> Result<Self, Error> {
         let maxv = ((1u64 << bpc) - 1) as f64;
         let ncomps = cs.ncomps();
         let mut conv = SampleConverter {
             cs,
+            target,
             maxv,
             decode: decode.to_vec(),
             lut: None,
@@ -8925,6 +9788,7 @@ impl SampleConverter {
             }
             conv.lut = Some(lut);
         } else if matches!(&*conv.cs, ColorSpace::DeviceRGB)
+            && target == PaintTarget::Rgb
             && bpc == 8
             && decode == [(0.0, 1.0); 3]
         {
@@ -8938,7 +9802,7 @@ impl SampleConverter {
             let (lo, hi) = self.decode[i];
             self.vals[i] = lo + (*c as f64 / self.maxv) * (hi - lo);
         }
-        let rgb = self.cs.to_rgb(&self.vals)?;
+        let rgb = self.target.rgb(&self.cs, &self.vals)?;
         Ok([to_u8(rgb[0]), to_u8(rgb[1]), to_u8(rgb[2])])
     }
 
@@ -9235,6 +10099,31 @@ fn hairline_width() -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cmyk_passes_combine_only_with_equal_alpha() {
+        let mut cmy = Pixmap::new(2, 1).unwrap();
+        let mut k = Pixmap::new(2, 1).unwrap();
+        // Pixel 0: C = M = Y = 0, K = 0.5 at alpha 1 → grey 0.5; pixel 1
+        // transparent in both.
+        cmy.data_mut()[..4].copy_from_slice(&[255, 255, 255, 255]);
+        k.data_mut()[..4].copy_from_slice(&[128, 128, 128, 255]);
+        let mut a = cmy.clone();
+        assert!(combine_cmyk(&mut a, &k));
+        assert_eq!(&a.data()[..4], &[128, 128, 128, 255]);
+        assert_eq!(&a.data()[4..], &[0, 0, 0, 0]);
+        // Alpha differing, or the K pass's channels differing: refused,
+        // nothing changed.
+        let mut k2 = k.clone();
+        k2.data_mut()[7] = 10;
+        k2.data_mut()[4..7].copy_from_slice(&[10, 10, 10]);
+        let mut a = cmy.clone();
+        assert!(!combine_cmyk(&mut a, &k2));
+        assert_eq!(a.data(), cmy.data());
+        let mut k3 = k.clone();
+        k3.data_mut()[1] = 127;
+        assert!(!combine_cmyk(&mut cmy.clone(), &k3));
+    }
+
     use super::*;
 
     /// A `w` × `h` texture whose pixel (x, y) is opaque grey `f(x, y)`.

@@ -56,6 +56,14 @@ versions follow [Semantic Versioning](https://semver.org/).
   still counts as hidden. (#85)
 
 ### Fixed
+- Rendering: a page group or isolated transparency group whose `/CS` is
+  DeviceCMYK blended in RGB; it now blends in DeviceCMYK (§11.3.4):
+  colours converted to CMYK, separable blend modes on the complemented
+  components, the result converted by §10.3.5 — for example magenta
+  under black with Difference is green, not magenta. What cannot be
+  blended there exactly (non-separable modes, knockout groups, nested
+  groups in another space) is blended in RGB as before and reported in
+  `color_approximations`.
 - Rendering: a JPX image with `/SMaskInData 2` had its colours divided
   by their alpha after the conversion to RGB, which is right only for
   spaces that convert as the identity; they are now divided in the

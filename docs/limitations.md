@@ -96,6 +96,32 @@ are on the [roadmap](architecture.md#roadmap).
   §10.3.5 conversion (no colour management: Poppler and Quartz, which
   manage CMYK, differ from it by ΔE00 ≈ 5–25 on saturated colours; the
   compat runner reports such pages, they are not defects).
+- **Group colour spaces**: only a DeviceCMYK `/CS` of the page group or
+  of an isolated, non-knockout group is honoured (blending in CMYK); a
+  DeviceGray or calibrated `/CS` blends in RGB, as does a DeviceCMYK one
+  with a non-separable blend mode, a knockout group, an isolated group
+  in another space or a pattern selected outside it (reported in
+  `color_approximations`). A soft mask's luminosity, and its `/BC`
+  backdrop, are taken in RGB: its group is painted in RGB (an isolated
+  DeviceCMYK group inside it, or the mask group itself when isolated
+  with a DeviceCMYK `/CS`, blends in CMYK and is converted to RGB at its
+  end). A page or group
+  blending in CMYK is painted twice (twice the interpretation work and
+  one more buffer of its size): both passes get the same buffer
+  headroom, and the work budgets (`max_xobject_invocations`,
+  `max_text_codes`, `max_pattern_tiles`, dashed-stroke work, decoded
+  bytes, reference resolutions) count both passes and any abandoned
+  attempt, so such a page can reach a limit the same page without the
+  group colour space does not — a limit then fails the render (the
+  buffer budget alone sends it to RGB, reported). A group painted in
+  RGB after its passes were abandoned starts no passes inside it.
+  A work limit reached while scanning a tiling cell's resources for
+  blend modes, or reading a group's `/CS`, fails the render (it used to
+  be read as an unreadable entry), as does a Type 3 or Type 1 `/Widths`
+  entry over the decoded-bytes or reference budget (it read as a zero
+  advance). Any read the document's budgets refuse during the passes
+  fails the render, even where a reader would carry on with a default. A knockout page group with a DeviceCMYK `/CS` blends in
+  RGB (reported).
 - **Text**: no hinting, no shaping (ligature substitution, kerning
   from GPOS); glyphs are placed exactly where the content stream
   puts them.

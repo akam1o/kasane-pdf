@@ -702,7 +702,11 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         let expect = widths_span(first_char, last_char);
         for (i, e) in arr.iter().enumerate().take(expect.min(arr.len())) {
             // Entries may themselves be indirect.
-            let e = doc.deref(e).unwrap_or_else(|_| e.clone());
+            let e = match doc.deref(e) {
+                Ok(v) => v,
+                Err(err @ Error::LimitExceeded { .. }) => return Err(err),
+                Err(_) => e.clone(),
+            };
             if let Some(v) = e.as_number() {
                 if let (true, Some(slot)) = (v.is_finite() && v >= 0.0, width_slot(first_char, i)) {
                     widths[slot] = v;
@@ -1346,7 +1350,11 @@ fn load_type3_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
             .ok_or_else(|| Error::Structure("/Widths is not an array".into()))?;
         let expect = widths_span(first_char, last_char);
         for (i, e) in arr.iter().enumerate().take(expect.min(arr.len())) {
-            let e = doc.deref(e).unwrap_or_else(|_| e.clone());
+            let e = match doc.deref(e) {
+                Ok(v) => v,
+                Err(err @ Error::LimitExceeded { .. }) => return Err(err),
+                Err(_) => e.clone(),
+            };
             if let Some(v) = e.as_number() {
                 if let (true, Some(slot)) = (v.is_finite() && v >= 0.0, width_slot(first_char, i)) {
                     widths[slot] = v;
