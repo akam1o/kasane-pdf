@@ -964,16 +964,16 @@ fn an_abandoned_pass_leaves_no_interpreter_state_behind() {
 }
 
 #[test]
-fn the_colour_key_of_a_premultiplied_jpx_image_is_on_its_stored_samples() {
-    // §8.9.6.4: /Mask [128 128 0 0 0 0] keys the stored samples
-    // (128, 0, 0) — every pixel is masked out — before /SMaskInData 2
-    // divides them by their alpha.
+fn a_colour_key_on_a_premultiplied_jpx_image_in_a_cmyk_group() {
+    // §11.6.4.3: with /SMaskInData ≠ 0 the embedded soft mask overrides
+    // a colour-key /Mask (here matching every stored sample): the image
+    // is red at opacity 0.5, on a DeviceCMYK page as on an RGB one.
     for g in [CMYK_PAGE, ""] {
         let r = render(
             jpx_page_with(g, RED_PM_JP2, "/Mask [128 128 0 0 0 0]"),
             &opts(),
         );
-        close(rgb(&r, 5, 5), [1.0; 3], g);
+        close(rgb(&r, 5, 5), [1.0, 0.5, 0.5], g);
     }
 }
 
